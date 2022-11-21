@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import math
+from Main.Data_processing import Data
 
 # Preprocessing
 from sklearn.model_selection import train_test_split
@@ -11,26 +12,59 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier
 
 class Models:
-    def __init__(self, df):
-        self.logistic_reg = LogisticRegression()
-        self.RF = RandomForestClassifier()
-        self.BG = BaggingClassifier()
-        self.GBC = GradientBoostingClassifier()
+    def __init__(self, df, date_split: int, step_ahead: int, nb_years_lag = 0):
+        self.df = df
+        self.date_split = date_split
+        self.nb_years_lag = nb_years_lag
+        self.step_ahead = step_ahead
+        self.range_data_split = range(self.date_split, len(df))
+        self.X = df.iloc[:, :-1] # la matrice X explicatives
+        self.Y = df.iloc[:,-1] # variable à expliquer
+        #self.Y_test_label = pd.concat([self.Y, pd.DataFrame(np.nan, index=self.df.index, columns=['RF_label'])], axis=1)
+        #self.Y_test_probs = pd.concat([self.Y, pd.DataFrame(np.nan, index=self.df.index, columns=['RF_probs'])], axis=1)
+        self.Y_train_US = None
+        self.Y_test_US = None
+        self.X_train_US = None
+        self.X_test_US = None
+        self.var_imp_RF = pd.DataFrame(np.nan, index=df.index, columns=self.X.columns)
+        self.var_imp_GB = pd.DataFrame(np.nan, index=df.index, columns=self.X.columns)
+        self.RF_model = None
+        #self.RF = RandomForestClassifier()
+        #self.BG = BaggingClassifier()
+        #self.GBC = GradientBoostingClassifier()
 
-    def split(self, test_size):
-        X = np.array(self.df[['Humidity', 'Pressure (millibars)']])
-        y = np.array(self.df['Temperature (C)'])
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size = test_size, random_state = 42)
+    def split_1(self):
+        for id_split in self.range_data_split:
+
+            if self.nb_years_lag == 0:
+                self.Y_train_US = self.df.iloc[0:id_split - self.step_ahead + 1, -1]
+                self.X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+            else:
+                self.Y_train_US = self.df.iloc[id_split - 12 * self.nb_years_lag:id_split - self.step_ahead + 1, -1]
+                self.X_train_US = self.X.iloc[id_split - 12 * self.nb_years_lag:id_split - self.step_ahead + 1, :]    
+
+            self.Y_test_US = self.df.iloc[id_split:, -1]
+            self.X_test_US = self.X.iloc[id_split:, :]
+        
+
+
+    def split_2(self):
+
+        #todo à tester la fonction: train_test_split()
+        self.X_train_US, self.X_test_US, self.Y_train_US, self.Y_test_US = train_test_split(self.X, self.Y, train_size = self.date_split, shuffle=False)
+
+
     def fit(self):
-        self.model = self.linear_reg.fit(self.X_train, self.y_train)
+        self.RF_model = RandomForestClassifier(n_estimators=2000,random_state=42).fit(self.X_train_US,self.Y_train_US)
     def predict(self):
-        result = self.linear_reg.predict(self.X_test)
-        return result
-if __name__ == '__main__':
-    model_instance = Model()
-    model_instance.split(0.2)
-    model_instance.fit()
-    print(model_instance.predict())
-    print("Accuracy: ",     model_instance.model.score(model_instance.X_test, model_instance.y_test))
-
-
+        self.Y_test_US_1  = pd.DataFrame(self.Y_test_US, columns=['USA (Acc_Slow)'])
+        self.Y_test_US_1["RF_labels"] = self.RF_model.predict(self.X_test_US)
+        self.Y_test_US_1["RF_probs"] = self.RF_model.predict_proba(self.X_test_US)[:,1]
+        #result_label = self.RF_model.predict(self.X_test_US)
+        #result_probs = self.Y_test_US["RF_probas"] = self.RF_model.predict_proba(self.X_test_US)
+#if __name__ == '__main__':
+#   model_instance = Models()
+#    model_instance.split(0.2)
+#    model_instance.fit()
+#    print(model_instance.predict())
+#    print("Accuracy: ",     model_instance.model.score(model_instance.X_test, model_instance.y_test))
