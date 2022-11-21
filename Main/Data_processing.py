@@ -19,9 +19,5 @@ class Data:
         print(self.df.head())
         print(self.df.describe())
 
-BDD_path = "../Data/BDD_SummerSchool_BENOIT.xlsx"
-BDD_sheet = "raw_data"
-data = Data(BDD_path, BDD_sheet)
-print(data.data_processing())
 
 
