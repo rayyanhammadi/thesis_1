@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
+from matplotlib import pyplot as plt
 import math
-from Main.Data_processing import Data
 
 # Preprocessing
 from sklearn.model_selection import train_test_split
@@ -62,6 +62,22 @@ class Models:
         self.Y_test_US_1["RF_probs"] = self.RF_model.predict_proba(self.X_test_US)[:,1]
         #result_label = self.RF_model.predict(self.X_test_US)
         #result_probs = self.Y_test_US["RF_probas"] = self.RF_model.predict_proba(self.X_test_US)
+    def plot(self):
+        y_label = self.Y_test_US_1.iloc[:,0] # variable témoin
+        y_label_RF = self.Y_test_US_1.iloc[:,1] #prédiction du modéle
+        y_probs_RF = self.Y_test_US_1.iloc[:,-1] # prédiction probas
+        plt.plot(y_probs_RF)
+        fig, ax = plt.subplots()
+        ax.plot(y_probs_RF.index, y_probs_RF, color='black')
+        threshold = 0.5
+        ax.axhline(threshold, color='gray', lw=2, alpha=0.7)
+        ax.fill_between(y_label.index, 0, 1, where=y_label == 1,
+                        color='gray', alpha=0.5, transform=ax.get_xaxis_transform())
+        plt.show()
+
+    def show_matrix_confusion(self):
+        pass
+        
 #if __name__ == '__main__':
 #   model_instance = Models()
 #    model_instance.split(0.2)
