@@ -7,6 +7,7 @@ raw_data$y<- raw_data$`USA (Acc_Slow)`
 data <- raw_data[,!(names(raw_data) %in% c("dates","USA (Acc_Slow)"))]
 
 covariates <- raw_data[,!(names(raw_data) %in% c("dates","USA (Acc_Slow)","y"))]
+cov_col_names <- colnames(covariates)
 target <- data.frame(date = raw_data$dates,ACC_SLO = raw_data$`USA (Acc_Slow)`)
 ans <- c()
 date_split = 204
@@ -17,13 +18,17 @@ predictions <- predictions[date_split:nrow(predictions),]
 normalize <- function(x, na.rm = TRUE) {
   return((x- min(x)) /(max(x)-min(x)))
 }
+norm_covariates <- normalize(covariates)
+norm_data<-norm_covariates
+norm_data$y<-raw_data$y
+
 
 logit_predict <- function(date_split,step_ahead){
   pred <- numeric(nrow(data))
   for (id_split in(date_split:nrow(covariates))){
     print(id_split)
-    data_train <- data[1:(id_split-step_ahead+1),]
-    x_test <- covariates[id_split,]
+    data_train <- norm_data[1:(id_split-step_ahead+1),]
+    x_test <- norm_covariates[id_split,]
     logistic <- glm(y~.,data=data_train,family="binomial")
     pred[id_split] <- predict(logistic,newdata=x_test,type='response')
     predictions[id_split-date_split+1,2] <- pred[id_split]
@@ -49,7 +54,14 @@ RF_predict <- function(date_split,step_ahead){
 
 
 a=logit_predict(date_split,step_ahead)
-plot(a$date,a$label,type="l",xlab="dates",ylab="predictions",col="green",main="RandomForest")
+plot(a$date,a$label,type="l",xlab="dates",ylab="predictions",col="green",main="Logit")
+polygon(a$date,data$y[date_split:nrow(data)],col="lightblue",density=100)
+abline(h=.5,col="red")
+legend("topright", c( "Acceleration", "Slowdown"),
+       col = c("lightblue","white"), lty = c(1, 1, 1), lwd = 2, box.lty = 0, bg = "gray95")
+
+b=RF_predict(date_split,step_ahead)
+plot(b$date,b$label,type="l",xlab="dates",ylab="predictions",col="green",main="RF")
 polygon(a$date,data$y[date_split:nrow(data)],col="lightblue",density=100)
 abline(h=.5,col="red")
 legend("topright", c( "Acceleration", "Slowdown"),
