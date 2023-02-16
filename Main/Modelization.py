@@ -14,6 +14,8 @@ from sklearn.linear_model import LogisticRegression, ElasticNet
 from sklearn.ensemble import RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier, AdaBoostRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.neighbors import KNeighborsRegressor
+#Importer neural Network
+from sklearn.neural_network import MLPClassifier
 #Performance
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score_loss, f1_score,\
     roc_auc_score, roc_curve, confusion_matrix ,mean_squared_error
@@ -219,7 +221,8 @@ class Models:
             self.DTR_model()
         elif self.name=="KNN":
             self.KNN_model()
-
+        elif self.name=="MLP":
+            self.MLP_model()
         aggregate_var_imp_RF_v1 = pd.DataFrame(np.nansum(self.var_imp, axis=0).T, index=self.X.columns, columns=['Importance'])
         aggregate_var_imp_RF_v1.index.name = 'variables'
         print(aggregate_var_imp_RF_v1.sort_values(by="Importance", ascending=False).head(10))
@@ -472,9 +475,19 @@ class Models:
             self.Y_test_probs.iloc[id_split, 1] = model_forest.predict_proba(X_test_US)[0][1]
             self.Y_test_label.iloc[id_split, 1] = model_forest.predict(X_test_US)[0]
 
-#if __name__ == '__main__':
-#   model_instance = Models()
-#    model_instance.split(0.2)
-#    model_instance.fit()
-#    print(model_instance.predict())
-#    print("Accuracy: ",     model_instance.model.score(model_instance.X_test, model_instance.y_test))
+#Partie LSTM/MLP:
+    def MLP_model(self):
+        print(str(self.step_ahead) + "step-ahead training and predicting with MLPClassifier model..")
+        range_data_split = range(self.date_split, len(self.X))
+        for id_split in range_data_split:
+
+            print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
+            Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
+            X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+
+            X_test_US = self.X.iloc[id_split:, :]
+
+            model = MLPClassifier(random_state=42, max_iter=300, activation="relu").fit(X_train_US, Y_train_US)
+            # self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
+            self.Y_test_probs.iloc[id_split,1] = model.predict_proba(X_test_US)[0][1]
+            self.Y_test_label.iloc[id_split, 1] = model.predict(X_test_US)[0]
