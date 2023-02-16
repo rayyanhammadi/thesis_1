@@ -1,25 +1,46 @@
 import pandas as pd
 import numpy as np
-from matplotlib import pyplot as plt
 import math
-import random
+from matplotlib import pyplot as plt
+from statistics import mean
+from collections import Counter
+from scipy.stats import bernoulli
 import seaborn as sns
 from sklearn.decomposition import PCA
 
 
 # CLassification
 from sklearn.linear_model import LogisticRegression, ElasticNet
-from sklearn.ensemble import RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier, AdaBoostClassifier
-
+from sklearn.ensemble import RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier, AdaBoostRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.neighbors import KNeighborsRegressor
 #Performance
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score_loss, f1_score,\
     roc_auc_score, roc_curve, confusion_matrix ,mean_squared_error
 
 # Cross validation
-from sklearn.model_selection import cross_val_score, GridSearchCV
-
+from sklearn.model_selection import cross_val_score, GridSearchCV, train_test_split
 
 class Models:
+    @staticmethod
+    def rolling_PCA(data, important_features, n_comp=.99):
+        """
+        Effectue une PCA sur la matrice X
+
+        :param data:
+        :param important_features:
+        :param n_comp:
+        :return:
+        """
+        pca = PCA(n_components=n_comp)
+        pca.fit_transform(data)
+        n_pcs = pca.n_components_
+        most_important = [np.abs(pca.components_[i]).argmax() for i in range(n_pcs)]
+        initial_feature_names = data.columns
+        most_important_features = [*set([initial_feature_names[most_important[i]] for i in range(n_pcs)])]
+        if important_features:
+            print(most_important_features)
+        return most_important_features
     def __init__(self,name:str, Y, X, date_split: int, step_ahead: int):
         """
         Initialisation de l'objet "models" et des variables qui seront utiles à la prédiction
@@ -128,10 +149,12 @@ class Models:
             precision = cf[1, 1] / sum(cf[:, 1])
             recall = cf[1, 1] / sum(cf[1, :])
             f1_score = 2 * precision * recall / (precision + recall)
-            brier_score = brier_score_loss(labels,preds)
             mse = mean_squared_error(labels,preds)
-            stats_text = "\n\nAccuracy={:0.3f}\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}\nMse={:0.3f}\nBrier_score={:0.3f}".format(
-                accuracy, precision, recall, f1_score,mse,brier_score)
+            ras = roc_auc_score(labels,preds)
+            stats_text = "\n\nAccuracy={:0.3f}\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}\nMse={:0.3f}" \
+                         "\n ROC_AUC Score={:0.3f}".format(
+
+                accuracy, precision, recall, f1_score,mse,ras)
         #     else:
         #         stats_text = "\n\nAccuracy={:0.3f}".format(accuracy)
         # else:
@@ -175,6 +198,7 @@ class Models:
         categories = ["Slowdown", "Acceleration"]
         self.make_confusion_matrix(cf = confusion_df,group_names=label,categories=categories,cmap='binary',labels=labels,preds=preds)
 
+
     def predict(self):
 
         if self.name == "logit":
@@ -191,6 +215,10 @@ class Models:
             self.GB_model()
         elif self.name == "BC":
             self.BC_model()
+        elif self.name == "DTR":
+            self.DTR_model()
+        elif self.name=="KNN":
+            self.KNN_model()
 
         aggregate_var_imp_RF_v1 = pd.DataFrame(np.nansum(self.var_imp, axis=0).T, index=self.X.columns, columns=['Importance'])
         aggregate_var_imp_RF_v1.index.name = 'variables'
@@ -198,14 +226,14 @@ class Models:
 
 
     def logit_model(self,method_1=False
-                    ,method_2=False,threshold_tuning=False):
+                    ,method_2=True,threshold_tuning=False):
         print(str(self.step_ahead) + " step-ahead training and predicting with logit model..")
 
-        def to_labels(pos_probs, threshold):
-            return int(pos_probs >= threshold)
+
 
         range_data_split = range(self.date_split, len(self.X))
         opt_thresholds=np.zeros((len(range_data_split)))
+        naif = False
         for id_split in range_data_split:
             if method_1:
                 print("predicting  Y_%i | X[0:%i,:] with method 1" % (id_split, id_split - self.step_ahead + 1 ))
@@ -229,16 +257,35 @@ class Models:
                 print("predicting  Y_%i | X[0:%i,:] with method 2" % (id_split, id_split - self.step_ahead + 1))
                 Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
                 Y_train_US_hat = Y_train_US.copy()
-                for i in range(self.step_ahead-1):
-                    Y_train_US_hat[self.Y.index[id_split - self.step_ahead + i + 2]] = Y_train_US[id_split - self.step_ahead]
+                if naif:
+                    for i in range(self.step_ahead-1):
+                        Y_train_US_hat[self.Y.index[id_split - self.step_ahead + i + 2]] = Y_train_US[id_split - self.step_ahead]
 
-                X_train_US = self.X.iloc[0:id_split, :]
+                    X_train_US = self.X.iloc[0:id_split, :]
 
-                X_test_US = self.X.iloc[id_split:, :]
+                    X_test_US = self.X.iloc[id_split:, :]
 
-                model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US_hat)
-                self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(X_test_US)[0][1]
-                self.Y_test_label.iloc[id_split, -1] = model.predict(X_test_US)[0]
+                    model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US_hat)
+                    self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(X_test_US)[0][1]
+                    self.Y_test_label.iloc[id_split, -1] = model.predict(X_test_US)[0]
+                else:
+
+                    if Counter(Y_train_US[id_split - self.step_ahead - 3:id_split]).most_common()[0][0]==1:
+                        print(Counter(Y_train_US[id_split - self.step_ahead - 6:id_split]).most_common()[0])
+                        p_hat = mean(Y_train_US[id_split - self.step_ahead - 6:id_split])
+                    else:
+                        p_hat = mean(Y_train_US[id_split - self.step_ahead - 6:id_split])
+                    print(p_hat)
+                    for i in range(self.step_ahead-1):
+                        Y_train_US_hat[self.Y.index[id_split - self.step_ahead + i + 2]] = bernoulli.rvs((lambda p: p if 1>=p>=0 else ( 1 if p>1 else 0 ))(p_hat), size=1)[0]
+                    X_train_US = self.X.iloc[0:id_split, :]
+
+                    X_test_US = self.X.iloc[id_split:, :]
+
+                    model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US_hat)
+                    self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(X_test_US)[0][1]
+                    self.Y_test_label.iloc[id_split, -1] = model.predict(X_test_US)[0]
+
             elif threshold_tuning:
                 print("predicting  Y_%i | X[0:%i,:], threshold tuning" % (id_split, id_split - self.step_ahead + 1))
                 Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
@@ -248,29 +295,24 @@ class Models:
 
                 model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US)
                 self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(X_test_US)[0][1]
-                self.Y_test_label.iloc[id_split, -1] = to_labels(model.predict_proba(X_test_US)[0][1],0.45)
+                self.Y_test_label.iloc[id_split, -1] = lambda: 1 if model.predict(X_test_US)[0] >= 0.5 else 0
             else:
-                print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1))
-                # data=X.iloc[0:id_split - self.step_ahead + 1, :]
-                # pca = PCA(n_components=.99)
-                # pca.fit_transform(data)
-                # n_pcs = pca.n_components_
-                # most_important = [np.abs(pca.components_[i]).argmax() for i in range(n_pcs)]
-                # initial_feature_names = data.columns
-                # most_important_features = [initial_feature_names[most_important[i]] for i in range(n_pcs)]
-                # print(most_important_features)
-                # data_tr,data_ts=data.filter(most_important_features),X.iloc[id_split:, :].filter(most_important_features)
+                print("predicting  Y_%i | X[0:%i,:] expanding window pca" % (id_split, id_split - self.step_ahead + 1))
+                data=self.X.iloc[0:id_split - self.step_ahead + 1, :]
+                most_important_features = self.rolling_PCA(data=data,important_features=True)
+                data_tr,data_ts=data.filter(most_important_features),self.X.iloc[id_split:, :].filter(most_important_features)
                 # X_train_US = data_tr
                 Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
-                X_test_US = self.X.iloc[id_split:, :]
+                # X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+                # X_test_US = self.X.iloc[id_split:, :]
 
-                model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US)
-                self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(X_test_US)[0][1]
-                self.Y_test_label.iloc[id_split, -1] = model.predict(X_test_US)[0]
+                model = LogisticRegression(max_iter=1000).fit(data_tr, Y_train_US)
+                self.Y_test_probs.iloc[id_split, -1] = model.predict_proba(data_ts)[0][1]
+                self.Y_test_label.iloc[id_split, -1] = model.predict(data_ts)[0]
 
 
     def RF_model(self,meth_1=True):
+
         print(str(self.step_ahead) + " step-ahead training and predicting with RF model..")
         range_data_split = range(self.date_split, len(self.X))
         for id_split in range_data_split:
@@ -284,9 +326,10 @@ class Models:
                         X_test_US = self.X.iloc[id_split - self.step_ahead + i + 2:, :]
                         Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
 
-                        model = RandomForestClassifier(n_estimators=2000, random_state=42).fit(X_train_US, Y_train_tilde)
+                        model = RandomForestClassifier(n_estimators=2000, random_state=42).fit(X_train_US,
+                                                                                               Y_train_tilde)
                         Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 2]] = \
-                        model.predict_proba(X_test_US)[0][1]
+                            model.predict_proba(X_test_US)[0][1]
                         Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 2]] = model.predict(X_test_US)[0]
 
                 if id_split < 431:
@@ -294,8 +337,8 @@ class Models:
                     self.Y_test_label.iloc[id_split, 1] = Y_hat_US_labs[id_split]
             else:
                 print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
-                Y_train_US = self.Y.iloc[int(math.log(id_split - 203)):id_split - self.step_ahead + 1]
-                X_train_US = self.X.iloc[int(math.log(id_split - 203)):id_split - self.step_ahead + 1, :]
+                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
+                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
 
                 X_test_US = self.X.iloc[id_split:, :]
 
@@ -304,22 +347,33 @@ class Models:
                 self.Y_test_probs.iloc[id_split,1] = model.predict_proba(X_test_US)[0][1]
                 self.Y_test_label.iloc[id_split, 1] = model.predict(X_test_US)[0]
 
-    def EN_model(self):
+    def EN_model(self, f=True):
         print(str(self.step_ahead) + " step-ahead training and predicting with Elastic Net model..")
         range_data_split = range(self.date_split, len(self.X))
+        if f:
+            for id_split in range_data_split:
 
-        for id_split in range_data_split:
+                print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
+                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
+                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
 
-            print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
-            Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-            X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+                X_test_US = self.X.iloc[id_split:, :]
 
-            X_test_US = self.X.iloc[id_split:, :]
-
-            model = ElasticNet().fit(X_train_US, Y_train_US)
+                model = ElasticNet().fit(X_train_US, Y_train_US)
+                # self.var_imp.iloc[id_split, :] = en.feature_importances_ * 100
+                self.Y_test_probs.iloc[id_split,1] = model.predict(X_test_US)[0]
+                self.Y_test_label.iloc[id_split, 1] = int(model.predict(X_test_US)[0] >= 0.5)
+        else:
+            X_train_US,X_test_US,Y_train_US,Y_test_US = train_test_split(self.X,self.Y,train_size=204, shuffle= False)
+            model = LogisticRegression(penalty="elasticnet", l1_ratio=1, max_iter=1000, solver="saga").fit(X_train_US, Y_train_US)
             # self.var_imp.iloc[id_split, :] = en.feature_importances_ * 100
-            self.Y_test_probs.iloc[id_split,1] = model.predict(X_test_US)[0]
-            self.Y_test_label.iloc[id_split, 1] = model.predict(X_test_US)[0]
+            print(len(X_test_US))
+            for id in range(len(X_test_US)):
+                self.Y_test_label.iloc[(id+204), 1] = model.predict(X_test_US)[id]
+                self.Y_test_probs.iloc[(id+204), 1] = model.predict_proba(X_test_US)[id][1]
+
+
+
     def ABC_model(self):
         print(str(self.step_ahead) + "step-ahead training and predicting with AdaBoostClassifier model..")
         range_data_split = range(self.date_split, len(self.X))
@@ -331,8 +385,8 @@ class Models:
 
             X_test_US = self.X.iloc[id_split:, :]
 
-            model = AdaBoostClassifier(n_estimators=2000).fit(X_train_US, Y_train_US)
-            self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
+            model = AdaBoostRegressor(n_estimators=500, learning_rate=0.1,base_estimator=LogisticRegression()).fit(X_train_US, Y_train_US)
+            # self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
             self.Y_test_probs.iloc[id_split,1] = model.predict(X_test_US)[0]
             self.Y_test_label.iloc[id_split, 1] = model.predict(X_test_US)[0]
 
@@ -366,6 +420,35 @@ class Models:
             # self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
             self.Y_test_probs.iloc[id_split,1] = model.predict_proba(X_test_US)[0][1]
             self.Y_test_label.iloc[id_split, 1] = model.predict(X_test_US)[0]
+    def KNN_model(self):
+        print(str(self.step_ahead) + "step-ahead training and predicting with KNN model..")
+        range_data_split = range(self.date_split, len(self.X))
+        for id_split in range_data_split:
+            print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1))
+            Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
+            X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+
+            X_test_US = self.X.iloc[id_split:, :]
+
+            model = KNeighborsRegressor(n_neighbors=1).fit(X_train_US, Y_train_US)
+            # self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
+            self.Y_test_probs.iloc[id_split, 1] = model.predict(X_test_US)[0]
+            self.Y_test_label.iloc[id_split, 1] = int(model.predict(X_test_US)[0]>0.5)
+    def DTR_model(self):
+        print(str(self.step_ahead) + "step-ahead training and predicting with DTR model..")
+        range_data_split = range(self.date_split, len(self.X))
+        for id_split in range_data_split:
+
+            print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
+            Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
+            X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+
+            X_test_US = self.X.iloc[id_split:, :]
+
+            model = DecisionTreeRegressor(random_state=42,criterion="friedman_mse").fit(X_train_US, Y_train_US)
+            # self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
+            self.Y_test_probs.iloc[id_split,1] = model.predict(X_test_US)[0]
+            self.Y_test_label.iloc[id_split, 1] = int(model.predict(X_test_US)[0]>=0.5)
 
     def CV_RF_model(self):
         print(str(self.step_ahead) + " step-ahead training and predicting with Cross Validation RF..")

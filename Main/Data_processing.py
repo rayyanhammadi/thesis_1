@@ -5,7 +5,7 @@ from pprint import pprint
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.graphics.tsaplots import plot_acf
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, Normalizer
 from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
 
@@ -50,7 +50,7 @@ class Data:
     @staticmethod
     def covariates_w_returns(data):
         for column in data:
-            for i in range(0,18):
+            for i in range(0,20):
                 data['%s_diff_%i' % (column, i+1)] = data[column].diff(i)
         return data.dropna()
 
@@ -80,6 +80,12 @@ class Data:
         df[data.columns] = scaler.fit_transform(data)
         return df
     @staticmethod
+    def normalize_norm(data):
+        scaler = MinMaxScaler()
+        df = pd.DataFrame()
+        df[data.columns] = scaler.fit_transform(data)
+        return df
+    @staticmethod
     def robust_norm(data):
         scaler = RobustScaler()
         df = pd.DataFrame()
@@ -91,11 +97,11 @@ class Data:
         df = pd.DataFrame()
         df[data.columns] = scaler.fit_transform(data)
         return df
+
     @staticmethod
     def PCA(data,important_features,n_comp=.99):
         """
         Effectue une PCA sur la matrice X
-
         :param data:
         :param important_features:
         :param n_comp:
@@ -110,7 +116,6 @@ class Data:
         if important_features :
             print(most_important_features)
         return data.filter(most_important_features)
-
 #----------------Data Analysis-------------------
 
     @staticmethod
@@ -158,7 +163,7 @@ class Data:
         axs[3].scatter(y=residual, x=range(len(residual)), alpha=0.5)
         axs[3].grid()
 
-        plot_acf(df[col_name].values, lags=12*31)
+        plot_acf(df[col_name].values, lags=400)
         plt.show()
 
 

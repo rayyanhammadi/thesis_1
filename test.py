@@ -3,6 +3,7 @@ from Main.Modelization import Models
 from pprint import pprint
 import pandas as pd
 import math
+import plotly as plt
 
 from matplotlib import pyplot as plt
 
@@ -14,10 +15,5 @@ BDD_path = "./Data/BDD_SummerSchool_BENOIT.xlsx"
 BDD_sheet = "raw_data"
 data = Data(BDD_path, BDD_sheet)
 data.data_processing()
-# X1=data.PCA(data.standardization_norm(data.covariates()),.99)
-# Y = data.target()
-print(data.data_summary())
-# Y['USA (Acc_Slow)'] = math.floor(Y[:,1])
-
-data.stationarity()
+# data.ts_decomposition(data.df)
 # todo : corriger les indices
