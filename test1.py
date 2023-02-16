@@ -13,9 +13,9 @@ data.data_processing()
 col_forward=["var51","var7","var41","var22","spread105","var34","var53","var55","var26","var3","var30","var42","spread13m","var31","var19","var1","var15","spi","var11","var35","spread102","var54","var49","gold","var43","var12","var32"]
 col_both =["var51","var7","var41","var22","var53","var55","var26","var3","spread13m","var31","var1","var15","spi","var11","var35","spread102","var43","var49","gold","var9","var32","var20","var56"]
 
-X1=data.standardization_norm(data.covariates()).filter(col_forward)
+X1=data.standardization_norm(data.covariates())
 Y = data.target()
-model_1 = Models(name="logit",Y=data.target(), X=X1, date_split=204, step_ahead=12)
+model_1 = Models(name="MLP",Y=data.target(), X=X1, date_split=204, step_ahead=12)
 # model_2 = Models(name="RF",Y=data.target(), X=X2, date_split=204, step_ahead=15)
 #
 model_1.predict()
