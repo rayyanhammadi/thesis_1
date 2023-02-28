@@ -8,7 +8,86 @@ from statsmodels.graphics.tsaplots import plot_acf
 from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, Normalizer
 from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
+import yahoofinancials as yf
+from os.path import exists
 
+
+
+def risky_index_processing():
+    history_sp = yf.YahooFinancials('^GSPC').get_historical_price_data('2002-01-01', '2020-12-31', 'daily')
+    df = pd.DataFrame(history_sp['^GSPC']['prices'])
+    df.drop('date', axis=1, inplace=True)
+    df.index = pd.to_datetime(df['formatted_date'])
+    df["price"] = df["adjclose"]
+    df = df.filter(["price"])
+    df = df.resample('D').ffill()
+    df = df[df.index.day == 15]
+    filename = "sp500_historical_data.txt"
+    df.to_csv(filename, sep='\t', index=True)
+    return df
+def resample_dataframe(df):
+    # Count the number of labels in the dataframe
+    label_counts = df['USA (Acc_Slow)'].value_counts()
+    #print(label_counts)
+    # Determine the minority and majority classes
+    minority_label = label_counts.idxmin()
+    majority_label = label_counts.idxmax()
+
+    # Determine the number of samples to keep from the minority class
+    minority_count = label_counts[minority_label]
+    majority_count = label_counts[majority_label]
+    #difference = majority_count - minority_count
+
+    minority_to_keep = majority_count
+
+    # Sample the minority class
+    minority_df = df[df['USA (Acc_Slow)'] == minority_label].sample(n=700, replace=True,random_state=42)
+
+    # Sample the majority class
+    majority_df = df[df['USA (Acc_Slow)'] == majority_label].sample(n=700, replace=True,random_state=42)
+
+    # Concatenate the minority and majority samples
+    balanced_df = pd.concat([minority_df, majority_df])
+
+    # Shuffle the samples
+    balanced_df = balanced_df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    return balanced_df
+def minmax_norm(X_train, X_test):
+    scaler = MinMaxScaler()
+    scaler.fit(X_train)
+    X_train_normalized,X_test_normalized = pd.DataFrame(),pd.DataFrame()
+    X_train_normalized[X_train.columns] = scaler.transform(X_train)
+    X_test_normalized[X_test.columns] = scaler.transform(X_test)
+    return X_train_normalized,X_test_normalized
+
+
+def standardization_norm(X_train, X_test):
+    scaler = StandardScaler()
+    scaler.fit(X_train)
+    X_train_normalized,X_test_normalized = pd.DataFrame(),pd.DataFrame()
+    X_train_normalized[X_train.columns] = scaler.transform(X_train)
+    X_test_normalized[X_test.columns] = scaler.transform(X_test)
+    return X_train_normalized,X_test_normalized
+
+def PCA_(data, important_features=False, n_comp=.99):
+    """
+    Effectue une PCA sur la matrice X
+
+    :param data:
+    :param important_features:
+    :param n_comp:
+    :return:
+    """
+    pca = PCA(n_components=n_comp)
+    pca.fit_transform(data)
+    n_pcs = pca.n_components_
+    most_important = [np.abs(pca.components_[i]).argmax() for i in range(n_pcs)]
+    initial_feature_names = data.columns
+    most_important_features = [*set([initial_feature_names[most_important[i]] for i in range(n_pcs)])]
+    if important_features:
+        print(most_important_features)
+    return most_important_features
 
 class Data:
     def __init__(self,BDD_path, BDD_sheet):
@@ -97,11 +176,11 @@ class Data:
         df = pd.DataFrame()
         df[data.columns] = scaler.fit_transform(data)
         return df
-
     @staticmethod
-    def PCA(data,important_features,n_comp=.99):
+    def PCA_(data, important_features=False, n_comp=.99):
         """
         Effectue une PCA sur la matrice X
+
         :param data:
         :param important_features:
         :param n_comp:
@@ -112,10 +191,15 @@ class Data:
         n_pcs = pca.n_components_
         most_important = [np.abs(pca.components_[i]).argmax() for i in range(n_pcs)]
         initial_feature_names = data.columns
-        most_important_features = [initial_feature_names[most_important[i]] for i in range(n_pcs)]
-        if important_features :
+        most_important_features = [*set([initial_feature_names[most_important[i]] for i in range(n_pcs)])]
+        if important_features:
             print(most_important_features)
-        return data.filter(most_important_features)
+        return most_important_features
+
+
+
+
+
 #----------------Data Analysis-------------------
 
     @staticmethod

@@ -1,4 +1,4 @@
-from Main.Data_processing import Data
+from Main.Data_processing import Data, rebalance_dataframe, minmax_norm
 from Main.Modelization import Models
 from pprint import pprint
 import pandas as pd
@@ -15,5 +15,5 @@ BDD_path = "./Data/BDD_SummerSchool_BENOIT.xlsx"
 BDD_sheet = "raw_data"
 data = Data(BDD_path, BDD_sheet)
 data.data_processing()
-# data.ts_decomposition(data.df)
-# todo : corriger les indices
+a,b=minmax_norm(data.covariates().iloc[204:300,:],data.covariates().iloc[300:,:])
+print(a,b.iloc[0])
