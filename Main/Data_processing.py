@@ -53,7 +53,7 @@ def risky_index_processing():
     filename = "sp500_historical_data.txt"
     df.to_csv(filename, sep='\t', index=True)
     return df
-def resample_dataframe(df):
+def resample_dataframe(df,over=True,under=True):
     # Count the number of labels in the dataframe
     label_counts = df['USA (Acc_Slow)'].value_counts()
     #print(label_counts)
@@ -61,16 +61,25 @@ def resample_dataframe(df):
     minority_label = label_counts.idxmin()
     majority_label = label_counts.idxmax()
 
-    # Determine the number of samples to keep from the minority class
-    minority_count = label_counts[minority_label]
-    majority_count = label_counts[majority_label]
+    if over:
 
+        # Determine the number of samples to keep from the minority class
 
-    # Sample the minority class
-    minority_df = df[df['USA (Acc_Slow)'] == minority_label].sample(n=majority_count, replace=True,random_state=42)
+        majority_count = label_counts[majority_label]
 
-    #  Sample the majority class
-    majority_df = df[df['USA (Acc_Slow)'] == 1]
+        # Sample the minority class
+        minority_df = df[df['USA (Acc_Slow)'] == minority_label].sample(n=majority_count, replace=True,random_state=42)
+    else:
+        minority_df = df[df['USA (Acc_Slow)'] == minority_label]
+
+    if under:
+        minority_count = label_counts[minority_label]
+
+        #  Sample the majority class
+        majority_df = df[df['USA (Acc_Slow)'] == majority_label].sample(n=minority_count, replace=True,random_state=42)
+
+    else:
+        majority_df = df[df['USA (Acc_Slow)'] == minority_label]
 
     # Concatenate the minority and majority samples
     balanced_df = pd.concat([minority_df, majority_df])
@@ -142,10 +151,11 @@ class Data:
             return self.df.iloc[:,-1].astype('int')
         return self.df.iloc[:,-1]
 
-    def covariates(self,returns=True, log=False):
+    def covariates(self,returns=False, log=False):
         if returns:
             aux = self.df.iloc[:, :-1].loc[:, (self.df.iloc[:, :-1] > 0).all()]
-            df_returns = aux[:,:-1].pct_change()
+
+            df_returns = aux.pct_change()
 
             # Rename the columns of the returns DataFrame to match the original columns
             if log :
@@ -157,25 +167,12 @@ class Data:
 
             new_dataset = pd.concat([self.df.iloc[:,:-1],df_returns], axis=1)
 
+
             return new_dataset.dropna()
+
 
         return self.df.iloc[:,:-1]
 
-    def lagged_covariates(self):
-        return self.lag_covariates(self.df.iloc[:,:-1])
-
-    @staticmethod
-    def lag_covariates(data, lag=18):
-        for column in data:
-            for i in range(0,18):
-                data['%s_lag_%i' % (column, i+1)] = data[column].shift(i)
-        return data.dropna()
-    @staticmethod
-    def covariates_w_returns(data):
-        for column in data:
-            for i in range(0,20):
-                data['%s_diff_%i' % (column, i+1)] = data[column].diff(i)
-        return data.dropna()
 
     def data_summary(self):
 
