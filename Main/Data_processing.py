@@ -11,10 +11,38 @@ from matplotlib import pyplot as plt
 import yahoofinancials as yf
 from os.path import exists
 
+def risk_free_index_processing():
+    history_13w_ustb = yf.YahooFinancials('^IRX').get_historical_price_data('2002-01-01', '2020-12-31', 'monthly')
+    history_10y_ustb = yf.YahooFinancials('^TNX').get_historical_price_data('2002-01-01', '2020-12-31', 'monthly')
 
+    df1 = pd.DataFrame(history_13w_ustb['^IRX']['prices'])
+    df2 = pd.DataFrame(history_10y_ustb['^TNX']['prices'])
+    df1.drop('date', axis=1, inplace=True)
+    df2.drop('date', axis=1, inplace=True)
+
+    df1.index = pd.to_datetime(df1['formatted_date'])
+    df2.index = pd.to_datetime(df2['formatted_date'])
+
+    df1["price"] = df1["adjclose"]
+    df2["price"] = df2["adjclose"]
+
+    df1 = df1.filter(["price"])
+    df2 = df2.filter(["price"])
+
+    # df = df.resample('D').ffill()
+    df1 = df1.resample('D').mean()  # Resample to daily frequency and aggregate using mean
+    df2 = df2.resample('D').mean()
+    # df = df.resample('D').ffill()
+    df1 = df1.interpolate()
+    df2 = df2.interpolate()# Interpolate missing values using linear interpolation
+    df1 = df1[df1.index.day == 15]
+    df2 = df2[df2.index.day == 15]
+    # filename = "sp500_historical_data.txt"
+    # df.to_csv(filename, sep='\t', index=True)
+    return df1,df2
 
 def risky_index_processing():
-    history_sp = yf.YahooFinancials('^GSPC').get_historical_price_data('2002-01-01', '2020-12-31', 'daily')
+    history_sp = yf.YahooFinancials('^GSPC').get_historical_price_data('2002-01-01', '2020-12-31', 'monthly')
     df = pd.DataFrame(history_sp['^GSPC']['prices'])
     df.drop('date', axis=1, inplace=True)
     df.index = pd.to_datetime(df['formatted_date'])
@@ -36,15 +64,13 @@ def resample_dataframe(df):
     # Determine the number of samples to keep from the minority class
     minority_count = label_counts[minority_label]
     majority_count = label_counts[majority_label]
-    #difference = majority_count - minority_count
 
-    minority_to_keep = majority_count
 
     # Sample the minority class
-    minority_df = df[df['USA (Acc_Slow)'] == minority_label].sample(n=700, replace=True,random_state=42)
+    minority_df = df[df['USA (Acc_Slow)'] == minority_label].sample(n=majority_count, replace=True,random_state=42)
 
-    # Sample the majority class
-    majority_df = df[df['USA (Acc_Slow)'] == majority_label].sample(n=700, replace=True,random_state=42)
+    #  Sample the majority class
+    majority_df = df[df['USA (Acc_Slow)'] == 1]
 
     # Concatenate the minority and majority samples
     balanced_df = pd.concat([minority_df, majority_df])
@@ -65,9 +91,11 @@ def minmax_norm(X_train, X_test):
 def standardization_norm(X_train, X_test):
     scaler = StandardScaler()
     scaler.fit(X_train)
-    X_train_normalized,X_test_normalized = pd.DataFrame(),pd.DataFrame()
-    X_train_normalized[X_train.columns] = scaler.transform(X_train)
-    X_test_normalized[X_test.columns] = scaler.transform(X_test)
+
+    # Normalize the data in X_train and X_test using the trained scaler
+    X_train_normalized = pd.DataFrame(scaler.transform(X_train), columns=X_train.columns)
+    X_test_normalized = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+
     return X_train_normalized,X_test_normalized
 
 def PCA_(data, important_features=False, n_comp=.99):
@@ -114,7 +142,23 @@ class Data:
             return self.df.iloc[:,-1].astype('int')
         return self.df.iloc[:,-1]
 
-    def covariates(self):
+    def covariates(self,returns=True, log=False):
+        if returns:
+            aux = self.df.iloc[:, :-1].loc[:, (self.df.iloc[:, :-1] > 0).all()]
+            df_returns = aux[:,:-1].pct_change()
+
+            # Rename the columns of the returns DataFrame to match the original columns
+            if log :
+                aux = self.df.iloc[:,:-1].loc[:, (self.df.iloc[:,:-1] > 0).all()]
+
+                df_returns = np.log(aux.iloc[:, 1:]) - np.log(aux.iloc[:, 1:].shift(1))
+
+            df_returns.columns = [column + '_return' for column in df_returns.columns]
+
+            new_dataset = pd.concat([self.df.iloc[:,:-1],df_returns], axis=1)
+
+            return new_dataset.dropna()
+
         return self.df.iloc[:,:-1]
 
     def lagged_covariates(self):
