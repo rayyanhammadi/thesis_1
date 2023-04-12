@@ -7,7 +7,6 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score
     roc_auc_score, roc_curve, confusion_matrix ,mean_squared_error, precision_recall_curve
 
 def compute_sharpe_ratio(monthly_return_pct):
-    # Calculate daily returns
 
     # Calculate annualized average daily return
     avg_monthly_return = monthly_return_pct.mean()
@@ -204,3 +203,18 @@ def read_predictions(filename):
     #name = filename.split('_')[0]
 
     return y_hat
+
+
+def optimize_label(df,score:str):
+    # Create a new column optimized label
+
+    df['optimized label'] = 0
+
+    # Get the optimal thresholds
+    opt_threshold = df.iloc[-1]["opt_threshold_"+score]
+
+    # Set the "optimized label" to 1 if "probs" > "opt_threshold"
+    df.loc[df['probs'] > opt_threshold, 'optimized label'] = 1
+
+    # Return the DataFrame with the new column
+    return df
