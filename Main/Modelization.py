@@ -71,6 +71,7 @@ class Models:
              ],
             axis=1)
         self.var_imp = pd.DataFrame(np.nan, index=X.index, columns=self.X.columns)
+        self.acc_f_time = pd.DataFrame(np.nan,index=Y.index, columns = ["acc"])
 
     def predict(self):
         models = {
@@ -90,8 +91,15 @@ class Models:
         print(aggregate_var_imp.sort_values(by="Importance", ascending=False).head(10))
 
     def logit_model(self):
-        method_1, method_2= False, False
-        normalize, resample, threshold_tuning, pca, params_tuning = True, False, True, False, False
+        # Booleans to choose which method of imputation we are using
+        method_1, method_2 =True, False
+
+        # Booleans to choose which model to predict missed values
+        initial, KNN, MRF= False,True,False
+
+        # Booleans to choose methods to enhance/tune the model
+        normalize, resample, threshold_tuning, pca, params_tuning = True, False, False, False, False
+
         opt_threshold = None
         if self.method == "method_1":
             method_1 = True
@@ -129,7 +137,20 @@ class Models:
                 for i in range(self.step_ahead):
                     # Train set goes to id of our initial train set to our last predicted/known missing Y
 
-                    print("\t prediciting Y_t- %i" % (self.step_ahead-i))
+                    if i != self.step_ahead-1:
+
+
+                        print("\t predicting missed value Y_%i" % (id_split - self.step_ahead+i+1))
+
+                    else:
+
+                        predicted_y = Y_hat_US_labs[id_split - self.step_ahead -1: id_split-1]
+                        true_y = self.Y[id_split - self.step_ahead -1: id_split-1]
+                        acc = accuracy_score(true_y, predicted_y)
+                        self.acc_f_time["acc"].iloc[id_split] = acc
+
+                        print("\t predicting Y_%i with imputation" % (id_split - self.step_ahead + i + 1))
+                        print("\t Accuracy of predicting the missed values", acc)
 
                     Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
                     X_train_US = self.X.iloc[0:id_split - self.step_ahead + i + 1, :]
@@ -182,7 +203,28 @@ class Models:
                     # Create model for each iteration to predict the next unknown Y
 
                     else:
-                        model = LogisticRegression(max_iter=5000,random_state=42, C=10).fit(X_train_US,Y_train_tilde)
+
+                        # Predict the Y we want with the initial model
+
+                        if i == self.step_ahead-1:
+                            model = LogisticRegression(max_iter=5000,random_state=42, C=10).fit(X_train_US,Y_train_tilde)
+
+                        # Imputation: estimate missed Ys
+
+                        else:
+
+                            #Imputation with initial model
+
+                            if initial:
+
+                                model = LogisticRegression(max_iter=5000,random_state=42, C=10).fit(X_train_US,Y_train_tilde)
+
+                            #Imputation using K-NN
+                            else:
+
+                                model = KNeighborsRegressor(n_neighbors=50).fit(X_train_US,Y_train_tilde)
+
+
 
                     if threshold_tuning:
 
@@ -236,9 +278,18 @@ class Models:
 
                             # print('Threshold=%.3f, Logloss-Score=%.5f' % (opt_threshold, scores[ix]))
 
-                    Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict_proba(X_test_US)[0][1]
-                    Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
+                    if KNN and i != self.step_ahead -1:
 
+                        Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
+                        Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = (lambda x:1 if x>0.5 else 0)(model.predict(X_test_US)[0])
+
+                    else:
+                        Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict_proba(X_test_US)[0][1]
+                        Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
+
+
+
+                # At the end of loop, one can check that id_split == id_split - self.step_ahead + i + 1
 
                 self.Y_hat["probs"].iloc[id_split] = Y_hat_US_probs[id_split]
                 self.Y_hat["label"].iloc[id_split] = Y_hat_US_labs[id_split]
@@ -385,7 +436,7 @@ class Models:
         if pca:
             return model,self.Y_hat, most_imp[-1]
         else:
-            return model, self.Y_hat
+            return model, self.Y_hat, self.acc_f_time
 
 
     def RF_model(self,meth_1=False, threshold_tuning=True):
