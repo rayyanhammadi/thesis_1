@@ -9,6 +9,9 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, No
 from sklearn.decomposition import PCA
 from matplotlib import pyplot as plt
 import yahoofinancials as yf
+import statsmodels.api as sm
+import pywt
+
 from os.path import exists
 
 def risk_free_index_processing():
@@ -151,7 +154,7 @@ class Data:
             return self.df.iloc[:,-1].astype('int')
         return self.df.iloc[:,-1]
 
-    def covariates(self,returns=False, log=False):
+    def covariates(self,returns=False, log=False, ts_analysis=False, wavelet=False, diff=False):
         if returns:
             aux = self.df.iloc[:, :-1].loc[:, (self.df.iloc[:, :-1] > 0).all()]
 
@@ -163,15 +166,70 @@ class Data:
 
                 df_returns = np.log(aux.iloc[:, 1:]) - np.log(aux.iloc[:, 1:].shift(1))
 
-            df_returns.columns = [column + '_return' for column in df_returns.columns]
+                df_returns.columns = [column + 'log_change' for column in df_returns.columns]
+            else:
+                df_returns.columns = [column + '_change' for column in df_returns.columns]
 
-            new_dataset = pd.concat([self.df.iloc[:,:-1],df_returns], axis=1)
+            new_dataset = pd.concat([self.df.iloc[:, :-1], df_returns], axis=1)
+
+            # Replace the first row (became NaN due to .pct()) by interpolation
+            new_dataset.iloc[0] = new_dataset.iloc[1]
 
 
-            return new_dataset.dropna()
+            return new_dataset
+
+        elif ts_analysis:
+            cov = self.df.iloc[:, :-1].copy()
+            cov[cov.columns + '_rolling_avg'] = cov[cov.columns].rolling(window=3).mean()
+            cov.fillna(method="bfill",inplace=True)
+
+            # Add a new column with the seasonal decomposition of the original column
+            for col in cov.columns:
+                decomposition = sm.tsa.seasonal_decompose(cov[col], model='additive', period=3)
+                cov[col+ '_trend'] = decomposition.trend
+                cov[col+ '_seasonal'] = decomposition.seasonal
+                cov[col + '_residual'] = decomposition.resid
+                cov.fillna(method="bfill",inplace=True)
+                cov.fillna(method="ffill", inplace=True)
+
+            return cov
+
+        elif wavelet:
+
+            cov = self.df.iloc[:, :-1].copy()
+
+            # Define the wavelet to be used
+            wavelet = 'db4'
+
+            # Loop over each column in the dataframe
+            for col in cov.columns:
+                # Perform the wavelet transform
+                coeffs = pywt.wavedec(cov[col], wavelet)
+
+                # Reconstruct the signal from the wavelet coefficients
+                reconstructed = pywt.waverec(coeffs, wavelet)
+
+                # Add the reconstructed signal to the original dataframe as a new column
+                cov[f"{col}_reconstructed"] = reconstructed
+
+            return cov
+        elif diff:
+
+            cov = self.df.iloc[:, :-1].copy()
+
+            for col in cov.columns:
+                for i in range(36):
+                    cov[f"{col}_diff_{i}"] = cov[col].diff(periods=i)
+
+            cov.fillna(method="bfill", inplace=True)
+
+            return cov
 
 
-        return self.df.iloc[:,:-1]
+
+        else:
+
+            return self.df.iloc[:,:-1]
 
 
     def data_summary(self):
