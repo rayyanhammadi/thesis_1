@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
+from tabulate import tabulate
 from utils.helpers import compute_sharpe_ratio
+from PIL import Image, ImageDraw, ImageFont
+
 
 class Portfolio:
 
@@ -148,7 +151,7 @@ class Portfolio:
 
         return self.portfolio_history["portfolio_value"], self.portfolio_history["return_pct"]
 
-    def backtest_report(self):
+    def backtest_report_(self,portfolios_history: list = None, names: list = None):
         if self.strategy == "dynamic":
             print("************* Descriptive Statistics for the Dynamic Strategy *************")
         else:
@@ -170,9 +173,55 @@ class Portfolio:
         print("Sharpe ratio", compute_sharpe_ratio(self.portfolio_history["return_pct"]))
         print("**************************************************")
 
-    def plots(self):
+    import pandas as pd
+    from tabulate import tabulate
+
+    import tabulate
+
+    import pandas as pd
+    from tabulate import tabulate
+
+    import pandas as pd
+    from tabulate import tabulate
+
+    import pandas as pd
+    from tabulate import tabulate
+
+    def backtest_report(self, portfolios_history: list = None, names: list = None):
+        """
+        Generate a report for each portfolio in the input list.
+
+        Args:
+        portfolios_history (list): a list of dictionaries containing the history of each portfolio
+        names (list): a list of names corresponding to each portfolio
+
+        Returns:
+        None
+        """
+
+        reports = []
+        for portfolio_history, name in zip(portfolios_history, names):
+            report = {}
+            report['Period'] = len(portfolio_history)
+            report['Max Monthly Drawdown in %'] = 100 * round(portfolio_history["return_pct"].min(), 2)
+            report['Highest Monthly Return in %'] = 100 * round(portfolio_history["return_pct"].max(), 2)
+            report['Average Returns in %'] = 100 * portfolio_history["return_pct"].mean()
+            report['Volatility'] = 100 * round(portfolio_history["return_pct"].std(), 2)
+            report['Net Return in %'] = 100 * portfolio_history["return_pct"].sum().round(2)
+            report['Sharpe ratio'] = compute_sharpe_ratio(portfolio_history["return_pct"])
+            reports.append(report)
+
+
+        df = pd.DataFrame(reports)
+        df.set_index('Period', inplace=True)
+        df = df.transpose()
+        df.columns = names
+        print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
+
+
+
+    def plots(self, portfolios_history: list = None, y_preds: list = None, names: list = None):
         # Plots
-        df = pd.concat([self.portfolio_history['portfolio_value'], self.y_pred], axis=1)
 
         f, axarr = plt.subplots(2, figsize=(12, 7))
         if self.strategy == "120/80_equity":
@@ -180,18 +229,25 @@ class Portfolio:
         else:
             f.suptitle('Portfolio Value and Return with the dynamic strategy', fontsize=20)
 
+        model_names = ["rf_", "gb_","logit_"]
+        for (portfolio_history, y_pred, name, model_name) in zip(portfolios_history, y_preds, names, model_names):
+            df = pd.concat([portfolio_history['portfolio_value'], y_pred], axis=1)
 
-        axarr[0].plot(self.portfolio_history["portfolio_value"], color='blue')
-        axarr[0].plot(self.risky_assets['price'], color='black')
-        axarr[0].scatter(df[df["label"] == 1].index,
-                         df["portfolio_value"][df["label"] == 1], color='green', marker='.', s=100,
-                         label="Predicted Acc.")
-        axarr[0].scatter(df[df["label"] == 0].index,
-                         df["portfolio_value"][df["label"] == 0], color='red', marker='.', s=100,
-                         label="Predicted Slo.")
+            axarr[0].plot(portfolio_history["portfolio_value"], label=f"{name} Portfolio", linewidth=2.5)
+            axarr[0].scatter(df[df[model_name + "label"] == 1].index,
+                             df["portfolio_value"][df[model_name + "label"] == 1], color='green', marker='.', s=100,
+                             label=f"{name} Predicted Acc.")
+            axarr[0].scatter(df[df[model_name + "label"] == 0].index,
+                             df["portfolio_value"][df[model_name + "label"] == 0], color='red', marker='.', s=100,
+                             label=f"{name} Predicted Slo.")
+            axarr[1].plot(100 * portfolio_history["return_pct"], label=f"{name} Portfolio returns")
+            axarr[1].grid(True)
 
+        axarr[0].plot(self.risky_assets['price'], color='black', label='B&H SP500')
         axarr[0].grid(True)
-        axarr[1].plot(100 * self.portfolio_history["return_pct"], color='red')
-        axarr[1].grid(True)
-        f.legend(['Portfolio value', 'B&H SP500', "Predicted Acc.", "Predicted Slo.", 'Return'], loc='upper left')
+
+        axarr[0].legend(loc='best')
+        axarr[1].legend(loc='best')
+
         plt.show()
+

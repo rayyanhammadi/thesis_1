@@ -1,354 +1,307 @@
 import pandas as pd
 import numpy as np
-import math
-from matplotlib import pyplot as plt
-from statistics import mean
-from collections import Counter
-from scipy.stats import bernoulli
-from sklearn.utils import shuffle
+import warnings
+
 
 
 # CLassification
-from sklearn.linear_model import LogisticRegression, ElasticNet
-from sklearn.ensemble import RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier, AdaBoostRegressor
-from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+
+from xgboost.sklearn import XGBClassifier
 from sklearn.neighbors import KNeighborsRegressor
 
-#Neural Network Classifier
-from sklearn.neural_network import MLPClassifier
-
 #Performance
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score_loss, f1_score,\
-    roc_auc_score, roc_curve, confusion_matrix ,mean_squared_error, precision_recall_curve, log_loss
+from sklearn.metrics import accuracy_score
 
 # Cross validation
-from sklearn.model_selection import cross_val_score, GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV
 
-#Data processing
 from Main.Data_processing import standardization_norm, PCA_, minmax_norm, resample_dataframe
+from utils.helpers import get_optimal_thresholds
 
 class Models:
     """
     A class for initializing prediction models and their parameters.
     """
 
-    def __init__(self, name: str, Y: pd.DataFrame, X: pd.DataFrame,
-                 date_split: int, step_ahead: int, method: str = None) -> None:
+    def __init__(self, Y: pd.DataFrame, X: pd.DataFrame,
+                 date_split: int, step_ahead: int, tuning: dict, method:dict) -> None:
         """
         Initialize the "models" object and the variables necessary for prediction.
 
-        :param name: Name of the model (see the predict() function)
         :param Y: The variable to be predicted
         :param X: The covariate matrix
         :param date_split: The date from which to predict Y
         :param step_ahead: The prediction step
-        :param method: The method used for prediction (optional)
+        :param tuning: dictionary (boolean) of model tuning operations
         """
-
-        self.name = name
-        self.method = method
-
-        if self.method == "method_1":
-            self.name += "_and_method_1"
-        elif self.method == "method_2":
-            self.name += "_and_method_2"
-        elif self.method == "threshold_tuning":
-            self.name += "_and_threshold_tuning"
-        elif self.method == "pca":
-            self.name += "_and_expanding_PCA"
 
         self.date_split = date_split
         self.step_ahead = step_ahead
+        self.tuning = tuning
+        self.method = method
         self.X = X
-        self.Y = Y
-        self.Y_hat = pd.concat(
-            [self.Y, pd.DataFrame(np.nan, index=self.Y.index, columns=['label']),
-             pd.DataFrame(np.nan, index=self.Y.index, columns=["probs"]),
-             pd.DataFrame(0.5, index=self.Y.index, columns=["opt_threshold_log_score"]),
-             pd.DataFrame(0.5, index=self.Y.index, columns=["opt_threshold_g_means"]),
-             pd.DataFrame(0.5, index=self.Y.index, columns=["opt_threshold_J"]),
-             pd.DataFrame(0.5, index=self.Y.index, columns=["opt_threshold_f1_score"])
-             ],
-            axis=1)
+        self.Y = pd.DataFrame(np.nan, index=Y.index, columns=["true_label"])
+        self.Y["true_label"] = Y
+
+        self.Y_hat = pd.DataFrame(np.nan, index=self.Y.index, columns=["true_label"])
+        self.Y_hat["true_label"] = self.Y["true_label"]
+        # Add new models here
+        for model in ["logit_", "rf_", "gb_"]:
+            self.Y_hat[model + 'label'] = self.Y.iloc[:date_split]
+            self.Y_hat[model + 'probs'] = None
+            self.Y_hat[model + "opt_threshold_log_score"] = None
+            self.Y_hat[model + "opt_threshold_g_means"] = None
+            self.Y_hat[model + "opt_threshold_J"] = None
+            self.Y_hat[model + "opt_threshold_f1_score"] = None
+            self.Y_hat[model + "opt_label_log_score"] = None
+            self.Y_hat[model + "opt_label_g_means"] = None
+            self.Y_hat[model + "opt_label_J"] = None
+            self.Y_hat[model + "opt_label_f1_score"] = None
+
+        # Stores most important variables
+
         self.var_imp = pd.DataFrame(np.nan, index=X.index, columns=self.X.columns)
-        self.acc_f_time = pd.DataFrame(np.nan,index=Y.index, columns = ["acc"])
 
-    def predict(self):
-        models = {
-            "logit": self.logit_model,
-            "RF": self.RF_model,
-            "ABC": self.ABC_model,
-            "GB": self.GB_model,
-        }
-        model_name = self.name.split('_')[0]
-        if model_name in models:
-            return models[model_name]()
-        else:
-            raise ValueError("Invalid model name")
+        # Stores accuracy of imputation
 
-        aggregate_var_imp = pd.DataFrame(np.nansum(self.var_imp, axis=0).T, index=self.X.columns,columns=['Importance'])
-        aggregate_var_imp.index.name = 'variables'
-        print(aggregate_var_imp.sort_values(by="Importance", ascending=False).head(10))
+        self.acc_f_time = pd.DataFrame(np.nan,index=Y.index, columns = ["logit_acc","rf_acc","gb_acc"])
 
-    def logit_model(self):
+    def models(self):
+
         # Booleans to choose which method of imputation we are using
-        method_1, method_2 =True, False
-
-        # Booleans to choose which model to predict missed values
-        initial, KNN, MRF= False,True,False
+        method_1, method_2 = self.method["method_1"], self.method["method_2"]
 
         # Booleans to choose methods to enhance/tune the model
-        normalize, resample, threshold_tuning, pca, params_tuning = True, False, False, False, False
-
-        opt_threshold = None
-        if self.method == "method_1":
-            method_1 = True
-        elif self.method == "method_2":
-            method_2 = True
-        elif self.method == "threshold_tuning":
-            threshold_tuning = True
-        elif self.method == "pca":
-            pca= True
-
-        print(str(self.step_ahead) + " step-ahead training and predicting with " + self.name)
+        normalize, resample, threshold_tuning, pca, params_tuning =self.tuning["normalize"],self.tuning["resample"],\
+                                                                   self.tuning["threshold_tuning"], self.tuning["pca"],\
+                                                                   self.tuning["params_tuning"]
 
 
+
+
+        print(str(self.step_ahead) + " step-ahead training and predicting...")
 
         range_data_split = range(self.date_split, len(self.X))
-        most_imp=[]
-        naif = False
+        most_imp = []
+
         for id_split in range_data_split:
 
-            # This method consists of predicting missed Y's that we've
+            # This method consists of predicting missing Y's that we've
             # supposed unknown for 12 months before our current prediction
 
             if method_1:
 
+                print("predicting  Y_%i | X[0:%i,:] with method 1, date:%s" % (id_split, id_split - self.step_ahead, self.Y.index[id_split].strftime('%Y-%m-%d')))
+                # Every 12 months, we erase potential errors
+                # we could have done due to imputation
 
-                print("predicting  Y_%i | X[0:%i,:] with method 1" % (id_split, id_split - self.step_ahead + 1 ))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-
-                # Declare variables used to store predictions of missed values of Y
-
-                Y_hat_US_labs, Y_hat_US_probs = Y_train_US.copy(), Y_train_US.copy()
+                Y_train_tilde_logit = self.Y_hat.loc[self.Y_hat.index[0:id_split - self.step_ahead], "true_label"]
+                Y_train_tilde_rf = self.Y_hat.loc[self.Y_hat.index[0:id_split - self.step_ahead], "true_label"]
+                Y_train_tilde_gb = self.Y_hat.loc[self.Y_hat.index[0:id_split - self.step_ahead], "true_label"]
 
                 # Loop on missed values of Y
 
-                for i in range(self.step_ahead):
-                    # Train set goes to id of our initial train set to our last predicted/known missing Y
+                for i in range(0, self.step_ahead + 1):
 
-                    if i != self.step_ahead-1:
+                    if i != self.step_ahead:
 
-
-                        print("\t predicting missed value Y_%i" % (id_split - self.step_ahead+i+1))
+                        print("\t predicting missing value Y_%i, date :%s" % (id_split - self.step_ahead + i, self.Y.index[id_split - self.step_ahead + i].strftime('%Y-%m-%d')))
 
                     else:
 
-                        predicted_y = Y_hat_US_labs[id_split - self.step_ahead -1: id_split-1]
-                        true_y = self.Y[id_split - self.step_ahead -1: id_split-1]
-                        acc = accuracy_score(true_y, predicted_y)
-                        self.acc_f_time["acc"].iloc[id_split] = acc
+                        print("\t predicting Y_%i with imputation, date:%s" % (id_split - self.step_ahead + i, self.Y.index[id_split - self.step_ahead + i].strftime('%Y-%m-%d')))
 
-                        print("\t predicting Y_%i with imputation" % (id_split - self.step_ahead + i + 1))
-                        print("\t Accuracy of predicting the missed values", acc)
 
-                    Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
-                    X_train_US = self.X.iloc[0:id_split - self.step_ahead + i + 1, :]
-                    X_test_US = self.X.iloc[id_split - self.step_ahead + i + 1:, :]
-
-                    # If True resamples train data
-                    # Check function implementation for more details
-
-                    if resample:
-                        resampled = resample_dataframe(pd.concat([X_train_US,Y_train_tilde], axis=1))
-                        Y_train_tilde = resampled.iloc[:, -1]
-
-                        X_train_US = resampled.iloc[:, :-1]
+                    X_train_US = self.X.iloc[0:id_split - self.step_ahead + i, :]
+                    X_test_US = self.X.iloc[id_split - self.step_ahead + i:, :]
 
 
                     # If True normalizes data
 
                     if normalize:
 
-                        # Here we can also use standardization_norm()
+                        # Here we can also use minmax_norm()
 
-                        X_train_US, X_test_US = minmax_norm(X_train_US,X_test_US)
+                        X_train_US, X_test_US = standardization_norm(X_train_US, X_test_US)[0].copy(), standardization_norm(X_train_US, X_test_US)[1].copy()
 
                         # Drop nan observations generated by normalization
 
                         if X_train_US.isna().any().any():
-                            aux = pd.concat([X_train_US,Y_train_tilde],axis=1).dropna()
-                            Y_train_tilde = aux.iloc[:,-1]
-                            X_train_US = aux.iloc[:,:-1]
 
+                            aux_logit = pd.concat([X_train_US, Y_train_tilde_logit], axis=1).dropna().copy()
+                            Y_train_tilde_logit = aux_logit.iloc[:, -1].copy()
+                            X_train_US = aux_logit.iloc[:, :-1].copy()
+
+                            aux_rf = pd.concat([X_train_US, Y_train_tilde_rf], axis=1).dropna().copy()
+                            Y_train_tilde_rf = aux_rf.iloc[:, -1].copy()
+                            X_train_US = aux_rf.iloc[:, :-1].copy()
+
+                            aux_gb = pd.concat([X_train_US, Y_train_tilde_gb], axis=1).dropna().copy()
+                            Y_train_tilde_gb = aux_gb.iloc[:, -1].copy()
+                            X_train_US = aux_gb.iloc[:, :-1].copy()
+
+
+
+
+
+
+
+                    # If True resamples train data
+                    # Check function implementation for more details
+
+                    if resample:
+
+                        # Auxiliary variables to keep the format of the Y_train_tile_model df
+                        # Otherwise we get errors if resample is True
+
+                        aux_logit = Y_train_tilde_logit.copy()
+                        aux_rf = Y_train_tilde_rf.copy()
+                        aux_gb = Y_train_tilde_gb.copy()
+
+                        resampled_logit = resample_dataframe(pd.concat([X_train_US, Y_train_tilde_logit], axis=1))
+                        resampled_rf = resample_dataframe(pd.concat([X_train_US, Y_train_tilde_rf], axis=1))
+                        resampled_gb = resample_dataframe(pd.concat([X_train_US, Y_train_tilde_gb], axis=1))
+
+                        Y_train_tilde_logit = resampled_logit.iloc[:, -1]
+                        Y_train_tilde_rf = resampled_rf.iloc[:, -1]
+                        Y_train_tilde_gb = resampled_gb.iloc[:, -1]
+
+                        X_train_US = resampled_logit.iloc[:, :-1]
 
 
                     # If True performs a PCA on train set
 
                     if pca:
-
                         most_important_features = PCA_(data=X_train_US, important_features=False, n_comp=.99)
                         most_imp.append(most_important_features)
-                        X_train_US, X_test_US = X_train_US.filter(most_important_features), X_test_US.filter(most_important_features)
+                        X_train_US, X_test_US = X_train_US.filter(most_important_features), X_test_US.filter(
+                            most_important_features)
 
                     # If True selects the best hyperparams of the model
-                    if params_tuning:
-                        params_grid = {'C': [0.001,0.01,0.1,1,10,100,1000]}
-                        grid_search_cv= GridSearchCV(LogisticRegression(max_iter=5000,random_state=42),
-                                                            params_grid,
-                                                            scoring="neg_log_loss", cv=5)
-                        model = grid_search_cv.fit(X_train_US, Y_train_tilde)
-                        print(model.best_params_)
+                    if params_tuning and id_split == len(self.X) - 1:
+                        params_grid_logit = {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000]}
+                        params_grid_gb = {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000]}
+
+
+                        params_grid_rf = {'max_depth': [None] + list(range(4, 8, 2)),
+                                       'min_samples_split': range(2, 8, 2),
+                                       'n_estimators': [100, 200, 1000]}
+                        grid_search_cv_logit = GridSearchCV(LogisticRegression(max_iter=5000, random_state=42),
+                                                      params_grid_logit,
+                                                      scoring="neg_log_loss", cv=5)
+                        grid_search_cv_gb = GridSearchCV(XGBClassifier(random_state=42),
+                                                      params_grid_gb,
+                                                      scoring="neg_log_loss", cv=5)
+                        grid_search_cv_rf = GridSearchCV(RandomForestClassifier(random_state=42),
+                                                      params_grid_rf,
+                                                      scoring="neg_log_loss", cv=5)
+                        model_logit = grid_search_cv_logit.fit(X_train_US, Y_train_tilde_logit)
+                        model_gb = grid_search_cv_gb.fit(X_train_US, Y_train_tilde_rf)
+                        model_rf = grid_search_cv_rf.fit(X_train_US, Y_train_tilde_gb)
+
 
                     # Create model for each iteration to predict the next unknown Y
 
                     else:
 
-                        # Predict the Y we want with the initial model
-
-                        if i == self.step_ahead-1:
-                            model = LogisticRegression(max_iter=5000,random_state=42, C=10).fit(X_train_US,Y_train_tilde)
-
-                        # Imputation: estimate missed Ys
-
-                        else:
-
-                            #Imputation with initial model
-
-                            if initial:
-
-                                model = LogisticRegression(max_iter=5000,random_state=42, C=10).fit(X_train_US,Y_train_tilde)
-
-                            #Imputation using K-NN
-                            else:
-
-                                model = KNeighborsRegressor(n_neighbors=50).fit(X_train_US,Y_train_tilde)
+                        model_logit = LogisticRegression(max_iter=5000, random_state=42, C=10).fit(X_train_US,
+                                                                                             Y_train_tilde_logit)
+                        model_rf = RandomForestClassifier(n_estimators=200, random_state=42).fit(X_train_US,
+                                                                                         Y_train_tilde_rf)
+                        model_gb = XGBClassifier(n_estimators=200, learning_rate=0.1,
+                                                      random_state=42).fit(X_train_US,Y_train_tilde_gb)
 
 
+
+
+
+                    models = {"logit_": model_logit, "rf_": model_rf, "gb_": model_gb}
 
                     if threshold_tuning:
 
-                        if id_split - 204 > 50:
-
-                            print("threshold tuning for the %i th observation" % (id_split+i))
-                            # Define thresholds
-
-                            thresholds = np.arange(0, 1, 0.01)
-
-                            # Define previous true Y's and its associated X
-
-                            previous_true_Y = self.Y.iloc[self.date_split + self.step_ahead:id_split - self.step_ahead]
-
-                            associated_X = self.X.iloc[self.date_split:id_split - 2*self.step_ahead:, :]
-
-                            if normalize:
-
-                                associated_X = minmax_norm(associated_X,associated_X)[0]
-
-                            if pca:
-                                associated_X = associated_X.filter(most_important_features)
-
-                            # calculate roc curves
-                            fpr, tpr, thresholds_1 = roc_curve(previous_true_Y, model.predict_proba(associated_X)[:,1])
+                        warnings.warn("Threshold tuning not implemented yet for meth_1")
 
 
-                            precision, recall, thresholds_2 = precision_recall_curve(previous_true_Y, model.predict_proba(associated_X)[:,1])
+                        print("\t \t threshold tuning for the %i th observation" % id_split)
 
-                            # Calculate Metrics
+                        #opt_threshold = get_optimal_thresholds(models, X_train_US, Y_train_tilde_logit)
 
-                            gmeans = np.sqrt(tpr * (1 - fpr))
-                            J = tpr - fpr
-                            fscore = (2 * precision * recall) / (precision + recall)
+                    # Get back the nonresampled Y_train_tilde to modify it
 
+                    if resample:
 
-                            # Evaluate thresholds
-
-                            scores = [log_loss(previous_true_Y, (
-                                    model.predict_proba(associated_X)[:,
-                                    1] >= t).astype('int')) for t in thresholds]
-
-                            # Get the best threshold according to the score
-
-                            ix_1 = np.argmin(scores)
-                            ix_2 = np.argax(J)
-                            ix_3 = np.argmax(fscore)
-                            ix_4 = np.argmax(gmeans)
-                            opt_threshold = {"log_score":thresholds[ix_1],"g_means":thresholds_1[ix_4],
-                                             "J": thresholds_1[ix_2], "f1_score":thresholds_2[ix_3]}
-
-                            # print('Threshold=%.3f, Logloss-Score=%.5f' % (opt_threshold, scores[ix]))
-
-                    if KNN and i != self.step_ahead -1:
-
-                        Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
-                        Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = (lambda x:1 if x>0.5 else 0)(model.predict(X_test_US)[0])
-
-                    else:
-                        Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict_proba(X_test_US)[0][1]
-                        Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
+                        Y_train_tilde_logit = aux_logit.copy()
+                        Y_train_tilde_rf = aux_rf.copy()
+                        Y_train_tilde_gb = aux_gb.copy()
 
 
+                    # Store predictions of missing Y's
 
-                # At the end of loop, one can check that id_split == id_split - self.step_ahead + i + 1
+                    Y_train_tilde_logit.loc[self.Y_hat.index[id_split - self.step_ahead + i]] = model_logit.predict(X_test_US)[
+                    0].copy()
+                    Y_train_tilde_rf.loc[self.Y_hat.index[id_split - self.step_ahead + i]] = model_rf.predict(X_test_US)[
+                    0].copy()
+                    Y_train_tilde_gb.loc[self.Y_hat.index[id_split - self.step_ahead + i]] = model_gb.predict(X_test_US)[
+                    0].copy()
 
-                self.Y_hat["probs"].iloc[id_split] = Y_hat_US_probs[id_split]
-                self.Y_hat["label"].iloc[id_split] = Y_hat_US_labs[id_split]
-                if threshold_tuning and id_split - 204 > 50:
-                    self.Y_hat["opt_threshold_log_score"].iloc[id_split] = opt_threshold["log_score"]
-                    self.Y_hat["opt_threshold_g_means"].iloc[id_split] = opt_threshold["g_means"]
-                    self.Y_hat["opt_threshold_J"].iloc[id_split] = opt_threshold["J"]
-                    self.Y_hat["opt_threshold_f1_score"].iloc[id_split] = opt_threshold["f1_score"]
+                # Variable to compute the accuracy of predicting the missing Y's
 
-            elif method_2:
-                print("predicting  Y_%i | X[0:%i,:] with method 2" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-                Y_train_US_hat = Y_train_US.copy()
-                if naif:
-                    for i in range(self.step_ahead-1):
-                        Y_train_US_hat[self.Y.index[id_split - self.step_ahead + i + 2]] = Y_train_US[id_split - self.step_ahead]
+                true_y = self.Y_hat.loc[self.Y_hat.index[id_split - self.step_ahead: id_split], "true_label"]
 
-                    X_train_US = self.X.iloc[0:id_split, :]
 
-                    X_test_US = self.X.iloc[id_split:, :]
+                # At the end of loop, one can check that id_split == id_split - self.step_ahead + i
 
-                    model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US_hat)
-                    self.Y_hat["probs"].iloc[id_split] = model.predict_proba(X_test_US)[0][1]
-                    self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
-                else:
-                    print(Counter(Y_train_US[id_split - self.step_ahead-24:]).most_common())
-                    if Counter(Y_train_US[id_split - self.step_ahead-24:]).most_common()[0][0]==0 and Counter(Y_train_US[id_split - self.step_ahead-24:]).most_common()[0][1]>=17:
-                        print(Counter(Y_train_US[id_split - self.step_ahead-24:]).most_common()[0])
-                        p_hat = mean(Y_train_US[id_split - self.step_ahead-24:]) +.3
-                    elif Counter(Y_train_US[id_split - self.step_ahead-3*12:]).most_common()[0][0]==1 and Counter(Y_train_US[id_split - self.step_ahead-3*12:]).most_common()[0][1]>=3*12:
-                        print(Counter(Y_train_US[id_split - self.step_ahead-24:]).most_common()[0])
-                        p_hat = mean(Y_train_US[id_split - self.step_ahead-24:]) -.3
-                    else:
-                        p_hat = mean(Y_train_US[id_split - self.step_ahead-24:])
-                    print(p_hat,mean(Y_train_US[id_split - self.step_ahead-24:]))
-                    for i in range(self.step_ahead-1):
-                        Y_train_US_hat[self.Y.index[id_split - self.step_ahead + i + 2]] = bernoulli.rvs((lambda p: p if 1>=p>=0 else ( 1 if p>1 else 0 ))(p_hat), size=1)[0]
-                    X_train_US = self.X.iloc[0:id_split, :]
+                for (model_name, model) in zip(models, models.values()):
 
-                    X_test_US = self.X.iloc[id_split:, :]
+                    self.Y_hat.loc[self.Y_hat.index[id_split - self.step_ahead + i], model_name + "probs"] = \
+                        '{:.2f}'.format(model.predict_proba(X_test_US)[0][1].copy())
+                    self.Y_hat.loc[self.Y_hat.index[id_split - self.step_ahead + i], model_name + "label"] = \
+                    model.predict(X_test_US)[
+                        0].copy()
 
-                    model = LogisticRegression(max_iter=1000).fit(X_train_US, Y_train_US_hat)
-                    self.Y_hat["probs"].iloc[id_split] = model.predict_proba(X_test_US)[0][1]
-                    self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
+                    # Compute accuracy of previous imputed Ys
+
+                    imputed_y = self.Y_hat.loc[self.Y_hat.index[id_split - self.step_ahead: id_split], model_name + "label"]
+                    acc = accuracy_score(true_y, imputed_y)
+                    self.acc_f_time.loc[id_split, model_name+ "acc"] = acc
+
+                    if threshold_tuning:
+                        for model in ["logit_", "rf_", "gb_"]:
+                            self.Y_hat.loc[self.Y.index[id_split], model + "opt_threshold_log_score"] = \
+                            opt_threshold[model]["log_score"]
+                            self.Y_hat.loc[self.Y.index[id_split], model + "opt_threshold_g_means"] = \
+                            opt_threshold[model]["g_means"]
+                            self.Y_hat.loc[self.Y.index[id_split], model + "opt_threshold_J"] = opt_threshold[model][
+                                "J"]
+                            self.Y_hat.loc[self.Y.index[id_split], model + "opt_threshold_f1_score"] = \
+                            opt_threshold[model]["f1_score"]
+
+                print(self.Y_hat.filter(["true_label", "logit_label"]).iloc[198:id_split + 10])
+
 
             else:
 
-                print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
+                print("predicting  Y_%i | X from 0 to %i, date:%s" % (id_split, id_split - self.step_ahead-1, self.Y.index[id_split].strftime('%Y-%m-%d')))
+                Y_train_US = self.Y.loc[self.Y.index[0:id_split - self.step_ahead],"true_label"]
                 X_test_US = self.X.iloc[id_split:, :]
 
+                if method_2:
+                    print('\t with method 2 \n')
+                    for i in range(0,self.step_ahead):
+                        Y_train_US[self.Y.index[id_split - self.step_ahead + i + 1]] = Y_train_US[id_split - self.step_ahead-1]
+                    X_train_US = self.X.iloc[0:id_split, :]
+                else:
+                    X_train_US = self.X.iloc[0:id_split - self.step_ahead, :]
 
+                print(Y_train_US)
                 if resample:
+
                     resampled = resample_dataframe(pd.concat([X_train_US, Y_train_US], axis=1))
                     Y_train_US = resampled.iloc[:, -1]
-
                     X_train_US = resampled.iloc[:, :-1]
-
+                print(Y_train_US)
                 # If True normalizes data
 
                 if normalize:
@@ -364,581 +317,113 @@ class Models:
                         Y_train_US = aux.iloc[:, -1]
                         X_train_US = aux.iloc[:, :-1]
 
-                if params_tuning:
-                    params_grid = {'C': [0.1, 1, 10, 50]}
-                    grid_search_cv = GridSearchCV(LogisticRegression(max_iter=5000, random_state=42),
-                                                  params_grid,
-                                                  scoring="neg_log_loss", cv=5)
-                    model = grid_search_cv.fit(X_train_US, Y_train_US)
-                    print(model.best_params_)
+                if params_tuning and id_split == len(self.X) - 1:
+                    params_grid_logit = {'penalty': ['l1', 'l2'],
+                                         'C': [0.01,0.1, 1.0, 10.0,100],
+                                         'fit_intercept': [True, False],
+                                         'solver': ['liblinear', 'saga']}
+
+                    params_grid_gb = {'learning_rate': [0.05, 0.1, 0.2],
+                                              'n_estimators': [50, 100, 200],
+                                              'max_depth': [3, 4, 5],
+                                              # 'min_samples_split': [2, 4, 6],
+                                              # 'subsample': [0.6, 0.8, 1.0],
+                                              'max_features': ['sqrt', 'log2', None]}
+
+                    params_grid_rf = {'n_estimators': [50, 100, 200],
+                                      # 'max_depth': [None, 10, 20, 30],
+                                      # 'min_samples_split': [2, 5, 10],
+                                      # 'min_samples_leaf': [1, 2, 4],
+                                      'max_features': ['sqrt', 'log2', None]}
+                    print('\t Params tuning for Logit \n')
+                    grid_search_cv_logit = GridSearchCV(LogisticRegression(max_iter=5000,random_state=42),
+                                                        params_grid_logit,
+                                                        scoring="f1", cv=5)
+                    print('\t Params tuning for GB \n')
+
+                    grid_search_cv_gb = GridSearchCV(XGBClassifier(random_state=42),
+                                                     params_grid_gb,
+                                                     scoring="neg_log_loss", cv=5)
+
+                    print('\t Params tuning for RF \n')
+
+                    grid_search_cv_rf = GridSearchCV(RandomForestClassifier(random_state=42),
+                                                     params_grid_rf,
+                                                     scoring="neg_log_loss", cv=5)
+
+                    model_logit = grid_search_cv_logit.fit(X_train_US, Y_train_US)
+                    print("\t\t",model_logit.best_params_,"\n")
+
+                    model_gb = grid_search_cv_gb.fit(X_train_US, Y_train_US)
+                    print("\t\t",model_gb.best_params_,"\n")
+
+                    model_rf = grid_search_cv_rf.fit(X_train_US, Y_train_US)
+                    print("\t\t",model_rf.best_params_,"\n")
+
+
+                    models = {"logit": model_logit, "rf": model_rf, "gb": model_gb}
+
+
                 else:
-                    model = LogisticRegression(max_iter=5000,random_state=42,C=1).fit(X_train_US, Y_train_US)
+
+                    print('\t Logit \n')
+                    model_logit = LogisticRegression(max_iter=5000, random_state=42, C=1).fit(X_train_US, Y_train_US)
+
+                    print('\t RF \n')
+                    model_rf = RandomForestClassifier(n_estimators=200, random_state=42).fit(X_train_US, Y_train_US)
+
+                    print('\t GB \n')
+                    model_gb = XGBClassifier(n_estimators=200, learning_rate=0.1,
+                                             random_state=42).fit(X_train_US, Y_train_US)
+
+
+                    models = {"logit_": model_logit, "rf_": model_rf, "gb_": model_gb}
 
                 if threshold_tuning:
 
-                    if id_split - 204 > 50:
+                    print("\t \t threshold tuning for the %i th observation" % id_split)
 
-                        print("threshold tuning for the %i th observation" % id_split)
+                    opt_threshold = get_optimal_thresholds(models, X_train_US,Y_train_US)
 
-                        # Define thresholds
+                models = {"logit_":model_logit,"rf_":model_rf,"gb_":model_gb}
 
-                        thresholds = np.arange(0, 1, 0.01)
+                for (model_name,model) in zip(models,models.values()):
+                    p = '{:.2f}'.format(model.predict_proba(X_test_US)[0][1])
+                    self.Y_hat.loc[self.Y.index[id_split],model_name + "probs"] = p
+                    self.Y_hat.loc[self.Y.index[id_split],model_name + "label"] = model.predict(X_test_US)[0]
 
-                        # Define previous true Y's and its associated X
+                    if threshold_tuning:
+                        self.Y_hat.loc[self.Y.index[id_split], model_name + 'opt_label_log_score'] = \
+                            (lambda x: 1 if float(p) > x else 0)(opt_threshold[model_name]["log_score"])
+                        self.Y_hat.loc[self.Y.index[id_split], model_name + 'opt_label_log_score'] = \
+                            (lambda x: 1 if float(p) > x else 0)(opt_threshold[model_name]["log_score"])
+                        self.Y_hat.loc[self.Y.index[id_split], model_name + 'opt_label_g_means'] = \
+                            (lambda x: 1 if float(p) > x else 0)(opt_threshold[model_name]["g_means"])
+                        self.Y_hat.loc[self.Y.index[id_split], model_name + 'opt_label_J'] = \
+                            (lambda x: 1 if float(p) > x else 0)(opt_threshold[model_name]["J"])
+                        self.Y_hat.loc[self.Y.index[id_split], model_name + 'opt_label_f1_score'] = \
+                            (lambda x: 1 if float(p) > x else 0)(opt_threshold[model_name]["f1_score"])
 
-                        previous_true_Y = self.Y.iloc[self.date_split + self.step_ahead:id_split]
-
-                        associated_X = self.X.iloc[self.date_split:id_split - self.step_ahead:, :]
-
-                        if normalize:
-                            associated_X = minmax_norm(associated_X, associated_X)[0]
-
-                        if pca:
-                            associated_X = associated_X.filter(most_important_features)
 
 
-                        # calculate roc curves
-                        fpr, tpr, thresholds_1 = roc_curve(previous_true_Y, model.predict_proba(associated_X)[:,1])
 
-                        precision, recall, thresholds_2 = precision_recall_curve(previous_true_Y,
-                                                                                 model.predict_proba(associated_X)[:,1])
+                if threshold_tuning:
+                    for model in ["logit_", "rf_", "gb_"]:
+                        self.Y_hat.loc[self.Y.index[id_split],model + "opt_threshold_log_score"]= '{:.2f}'.format(opt_threshold[model][
+                            "log_score"])
+                        self.Y_hat.loc[self.Y.index[id_split],model + "opt_threshold_g_means"] = '{:.2f}'.format(opt_threshold[model][
+                            "g_means"])
+                        self.Y_hat.loc[self.Y.index[id_split],model + "opt_threshold_J"]= '{:.2f}'.format(opt_threshold[model]["J"])
+                        self.Y_hat.loc[self.Y.index[id_split],model + "opt_threshold_f1_score"] = '{:.2f}'.format(opt_threshold[model][
+                            "f1_score"])
 
-                        # Calculate Metrics
+        importance_logit = model_logit.coef_[0]
+        importance_rf = model_rf.feature_importances_
+        importance_gb = model_gb.feature_importances_
 
-                        gmeans = np.sqrt(tpr * (1 - fpr))
-                        J = tpr - fpr
-                        fscore = (2 * precision * recall) / (precision + recall)
-
-                        # Evaluate thresholds
-
-                        scores = [log_loss(previous_true_Y, (
-                                model.predict_proba(associated_X)[:,
-                                1] >= t).astype('int')) for t in thresholds]
-
-                        # Get the best threshold according to the score
-
-                        ix_1 = np.argmin(scores)
-                        ix_2 = np.argmax(J)
-                        ix_3 = np.argmax(fscore)
-                        ix_4 = np.argmax(gmeans)
-                        opt_threshold = {"log_score": thresholds[ix_1], "g_means": thresholds_1[ix_4],
-                                         "J": thresholds_1[ix_2], "f1_score": thresholds_2[ix_3]}
-                    # print('Threshold=%.3f, Logloss-Score=%.5f' % (opt_threshold, scores[ix]))
-
-                self.Y_hat["probs"].iloc[id_split]= model.predict_proba(X_test_US)[0][1]
-                self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
-                if threshold_tuning and id_split - 204 > 50:
-                    self.Y_hat["opt_threshold_log_score"].iloc[id_split] = opt_threshold["log_score"]
-                    self.Y_hat["opt_threshold_g_means"].iloc[id_split] = opt_threshold["g_means"]
-                    self.Y_hat["opt_threshold_J"].iloc[id_split] = opt_threshold["J"]
-                    self.Y_hat["opt_threshold_f1_score"].iloc[id_split] = opt_threshold["f1_score"]
+        feature_importance = {"logit_": importance_logit,"rf_": importance_rf,"gb_": importance_gb}
 
         if pca:
-            return model,self.Y_hat, most_imp[-1]
+            return models, self.Y_hat, most_imp[-1]
         else:
-            return model, self.Y_hat, self.acc_f_time
-
-
-    def RF_model(self,meth_1=False, threshold_tuning=True):
-
-        print(str(self.step_ahead) + " step-ahead training and predicting with RF model..")
-        range_data_split = range(self.date_split, len(self.X))
-        method_1=False
-        normalize, resample, threshold_tuning, params_tuning, pca = True, True, True, False, False
-        most_imp=[]
-
-        for id_split in range_data_split:
-            if method_1:
-
-                print("predicting  Y_%i | X[0:%i,:] with method 1" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-
-                # Declare variables used to store predictions of missed values of Y
-
-                Y_hat_US_labs, Y_hat_US_probs = Y_train_US.copy(), Y_train_US.copy()
-
-                # Loop on missed values of Y
-
-                for i in range(self.step_ahead):
-                    # Train set goes to id of our initial train set to our last predicted/known missing Y
-
-                    print("\t prediciting Y_t- %i" % (self.step_ahead - i))
-
-                    Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
-                    X_train_US = self.X.iloc[0:id_split - self.step_ahead + i + 1, :]
-                    X_test_US = self.X.iloc[id_split - self.step_ahead + i + 1:, :]
-
-                    # If True resamples train data
-                    # Check function implementation for more details
-
-                    if resample:
-                        resampled = resample_dataframe(pd.concat([X_train_US, Y_train_tilde], axis=1))
-                        Y_train_tilde = resampled.iloc[:, -1]
-
-                        X_train_US = resampled.iloc[:, :-1]
-
-                    # If True normalizes data
-
-                    if normalize:
-
-                        # Here we can also use standardization_norm()
-
-                        X_train_US, X_test_US = standardization_norm(X_train_US, X_test_US)
-
-                        # Drop nan observations generated by normalization
-
-                        if X_train_US.isna().any().any():
-                            aux = pd.concat([X_train_US, Y_train_tilde], axis=1).dropna()
-                            Y_train_tilde = aux.iloc[:, -1]
-                            X_train_US = aux.iloc[:, :-1]
-
-                    # If True performs a PCA on train set
-
-                    if pca:
-                        most_important_features = PCA_(data=X_train_US, important_features=False, n_comp=.99)
-                        most_imp.append(most_important_features)
-                        X_train_US, X_test_US = X_train_US.filter(most_important_features), X_test_US.filter(
-                            most_important_features)
-
-                    # If True selects the best hyperparams of the model
-                    if params_tuning:
-                        params_grid = {'max_depth': [None] + list(range(4, 8, 2)),
-                              'min_samples_split': range(2, 8, 2),
-                              'n_estimators': [100, 200,1000]}
-                        grid_search_cv = GridSearchCV(RandomForestClassifier(random_state=42),
-                                                      params_grid,
-                                                      scoring="neg_log_loss", cv=5)
-                        model = grid_search_cv.fit(X_train_US, Y_train_tilde)
-                        print(model.best_params_)
-
-                    # Create model for each iteration to predict the next unknown Y
-
-                    else:
-                        model = RandomForestClassifier(n_estimators=2000, random_state=42).fit(X_train_US,
-                                                                                             Y_train_tilde)
-
-                    if threshold_tuning:
-
-                        if id_split - 204 > 100:
-
-                            print("threshold tuning for the %i th observation" % (id_split + i))
-                            # Define thresholds
-
-                            thresholds = np.arange(0.3, 1, 0.01)
-
-                            # Define previous true Y's and its associated X
-
-                            previous_true_Y = self.Y.iloc[self.date_split + self.step_ahead :id_split - self.step_ahead]
-
-                            associated_X = self.X.iloc[self.date_split:id_split - 2*self.step_ahead:, :]
-
-                            if normalize:
-                                associated_X = minmax_norm(associated_X, associated_X)[0]
-
-                            if pca:
-                                associated_X = associated_X.filter(most_important_features)
-
-                            # calculate roc curves
-                            fpr, tpr, thresholds_1 = roc_curve(previous_true_Y,
-                                                               model.predict_proba(associated_X)[:, 1])
-
-                            precision, recall, thresholds_2 = precision_recall_curve(previous_true_Y,
-                                                                                     model.predict_proba(
-                                                                                         associated_X)[:, 1])
-
-                            # Calculate Metrics
-
-                            gmeans = np.sqrt(tpr * (1 - fpr))
-                            J = tpr - fpr
-                            fscore = (2 * precision * recall) / (precision + recall)
-
-                            # Evaluate thresholds
-
-                            scores = [log_loss(previous_true_Y, (
-                                    model.predict_proba(associated_X)[:,
-                                    1] >= t).astype('int')) for t in thresholds]
-
-                            # Get the best threshold according to the score
-
-                            ix_1 = np.argmin(scores)
-                            ix_2 = np.argmax(J)
-                            ix_3 = np.argmax(fscore)
-                            ix_4 = np.argmax(gmeans)
-                            opt_threshold = {"log_score": thresholds[ix_1], "g_means": thresholds_1[ix_4],
-                                             "J": thresholds_1[ix_2], "f1_score": thresholds_2[ix_3]}
-
-
-                    # Store prediction of missed Ys
-
-                    Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = \
-                    model.predict_proba(X_test_US)[0][1]
-                    Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[
-                        0]
-
-
-                self.Y_hat["probs"].iloc[id_split] = Y_hat_US_probs[id_split]
-                self.Y_hat["label"].iloc[id_split] = Y_hat_US_labs[id_split]
-
-                if threshold_tuning and id_split - 204 > 50:
-                    self.Y_hat["opt_threshold_log_score"].iloc[id_split] = opt_threshold["log_score"]
-                    self.Y_hat["opt_threshold_g_means"].iloc[id_split] = opt_threshold["g_means"]
-                    self.Y_hat["opt_threshold_J"].iloc[id_split] = opt_threshold["J"]
-                    self.Y_hat["opt_threshold_f1_score"].iloc[id_split] = opt_threshold["f1_score"]
-            else:
-
-
-                print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
-
-                X_test_US = self.X.iloc[id_split:, :]
-
-                if resample:
-                    resampled = resample_dataframe(pd.concat([X_train_US, Y_train_US], axis=1))
-                    Y_train_US = resampled.iloc[:, -1]
-
-                    X_train_US = resampled.iloc[:, :-1]
-
-                # If True normalizes data
-                if normalize:
-
-                    # Here we can also use standardization_norm()
-
-                    X_train_US, X_test_US = standardization_norm(X_train_US, X_test_US)
-
-                    # Drop nan observations generated by normalization
-
-                    if X_train_US.isna().any().any():
-                        aux = pd.concat([X_train_US, Y_train_US], axis=1).dropna()
-                        Y_train_US = aux.iloc[:, -1]
-                        X_train_US = aux.iloc[:, :-1]
-
-                model = RandomForestClassifier(n_estimators=2000, random_state=42).fit(X_train_US, Y_train_US)
-
-
-                if threshold_tuning:
-
-                    if id_split - 204 > 100:
-
-                        print("threshold tuning for the %i th observation" % id_split )
-                        # Define thresholds
-
-                        thresholds = np.arange(0.3, 1, 0.01)
-
-                        # Define previous true Y's and its associated X
-
-                        previous_true_Y = self.Y.iloc[self.date_split + self.step_ahead :id_split - self.step_ahead]
-
-                        associated_X = self.X.iloc[self.date_split:id_split - 2 * self.step_ahead:, :]
-
-                        if normalize:
-                            associated_X = standardization_norm(associated_X, associated_X)[0]
-
-                        # calculate roc curves
-                        fpr, tpr, thresholds_1 = roc_curve(previous_true_Y, model.predict_proba(associated_X)[:, 1])
-
-                        precision, recall, thresholds_2 = precision_recall_curve(previous_true_Y,
-                                                                                 model.predict_proba(associated_X)[
-                                                                                 :, 1])
-
-                        # Calculate Metrics
-
-                        gmeans = np.sqrt(tpr * (1 - fpr))
-                        J = tpr - fpr
-                        fscore = (2 * precision * recall) / (precision + recall)
-
-                        # Evaluate thresholds
-
-                        scores = [log_loss(previous_true_Y, (
-                                model.predict_proba(associated_X)[:,
-                                1] >= t).astype('int')) for t in thresholds]
-
-                        # Get the best threshold according to the score
-
-                        ix_1 = np.argmin(scores)
-                        ix_2 = np.argmax(J)
-                        ix_3 = np.argmax(fscore)
-                        ix_4 = np.argmax(gmeans)
-                        opt_threshold = {"log_score": thresholds[ix_1], "g_means": thresholds_1[ix_4],
-                                         "J": thresholds_1[ix_2], "f1_score": thresholds_2[ix_3]}
-
-                    self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
-                    self.Y_hat["probs"].iloc[id_split] = model.predict_proba(X_test_US)[0][1]
-                    self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
-
-                else:
-                    self.var_imp.iloc[id_split, :] = model.feature_importances_ * 100
-                    self.Y_hat["probs"].iloc[id_split] = model.predict_proba(X_test_US)[0][1]
-                    self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
-
-                    if threshold_tuning and id_split - 204 > 50:
-                        self.Y_hat["opt_threshold_log_score"].iloc[id_split] = opt_threshold["log_score"]
-                        self.Y_hat["opt_threshold_g_means"].iloc[id_split] = opt_threshold["g_means"]
-                        self.Y_hat["opt_threshold_J"].iloc[id_split] = opt_threshold["J"]
-                        self.Y_hat["opt_threshold_f1_score"].iloc[id_split] = opt_threshold["f1_score"]
-
-        return model, self.Y_hat
-
-    def ABC_model(self):
-        print(str(self.step_ahead) + "step-ahead training and predicting with AdaBoostClassifier model..")
-        range_data_split = range(self.date_split, len(self.X))
-        method_1= True
-        most_imp = []
-        for id_split in range_data_split:
-
-            print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1 ))
-            if method_1:
-
-                normalize, resample, threshold_tuning, pca, params_tuning = True, False, False, False, False
-
-                print("predicting  Y_%i | X[0:%i,:] with method 1" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-
-                # Declare variables used to store predictions of missed values of Y
-
-                Y_hat_US_labs, Y_hat_US_probs = Y_train_US.copy(), Y_train_US.copy()
-
-                if id_split < 431:
-
-                    # Loop on missed values of Y
-
-                    for i in range(self.step_ahead):
-                        # Train set goes to id of our initial train set to our last predicted/known missing Y
-
-                        print("\t prediciting Y_t- %i" % (12 - i))
-
-                        Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
-                        X_train_US = self.X.iloc[0:id_split - self.step_ahead + i + 1, :]
-                        X_test_US = self.X.iloc[id_split - self.step_ahead + i + 2:, :]
-
-                        # If True resamples train data
-                        # Check function implementation for more details
-
-                        if resample:
-                            resampled = resample_dataframe(pd.concat([X_train_US, Y_train_tilde], axis=1))
-                            Y_train_tilde = resampled.iloc[:, -1]
-
-                            X_train_US = resampled.iloc[:, :-1]
-
-                        # If True normalizes data
-
-                        if normalize:
-
-                            # Here we can also use standardization_norm()
-
-                            X_train_US, X_test_US = minmax_norm(X_train_US, X_test_US)
-
-                            # Drop nan observations generated by normalization
-
-                            if X_train_US.isna().any().any():
-                                aux = pd.concat([X_train_US, Y_train_tilde], axis=1).dropna()
-                                Y_train_tilde = aux.iloc[:, -1]
-                                X_train_US = aux.iloc[:, :-1]
-
-                        # If True performs a PCA on train set
-
-                        if pca:
-                            most_important_features = PCA_(data=X_train_US, important_features=False, n_comp=.99)
-                            most_imp.append(most_important_features)
-                            X_train_US, X_test_US = X_train_US.filter(most_important_features), X_test_US.filter(
-                                most_important_features)
-
-                        # If True selects the best hyperparams of the model
-                        if params_tuning:
-                            params_grid = {'n_estimators': [100,200,300,500],
-                                           'learning_rate': np.arange(0,1,0.01)}
-                            grid_search_cv = GridSearchCV(AdaBoostRegressor(n_estimators=500, learning_rate=0.1,base_estimator=LogisticRegression()),
-                                                          params_grid,
-                                                          scoring="neg_log_loss", cv=5)
-                            model = grid_search_cv.fit(X_train_US, Y_train_tilde)
-                            print(model.best_params_)
-
-                        # Create model for each iteration to predict the next unknown Y
-
-                        else:
-                            model = AdaBoostRegressor(n_estimators=500, learning_rate=0.1,base_estimator=LogisticRegression()).fit(X_train_US,
-                                                                                                 Y_train_tilde)
-
-                        if threshold_tuning:
-
-                            if id_split - 204 > 100:
-
-                                print("threshold tuning for the %i th observation" % (id_split + i))
-                                # Define thresholds
-
-                                thresholds = np.arange(0.3, 1, 0.01)
-
-                                # Define previous true Y's and its associated X
-
-                                previous_true_Y = self.Y.iloc[self.date_split + 12:id_split - 12]
-
-                                associated_X = self.X.iloc[self.date_split:id_split - 24:, :]
-
-                                if normalize:
-                                    associated_X = minmax_norm(associated_X, associated_X)[0]
-
-                                if pca:
-                                    associated_X = associated_X.filter(most_important_features)
-                                # Evaluate each threshold
-
-                                scores = [log_loss(previous_true_Y, (
-                                        model.predict_proba(associated_X)[:,
-                                        1] >= t).astype('int')) for t in thresholds]
-
-                                # Get the best threshold according to the score
-
-                                ix = np.argmin(scores)
-                                opt_threshold = thresholds[ix]
-
-                                Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 2]] = \
-                                model.predict_proba(X_test_US)[0][1]
-                                Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 2]] = (
-                                    lambda t: 1 if model.predict_proba(X_test_US)[0][1] >= t else 0)(opt_threshold)
-
-                                print('Threshold=%.3f, Logloss-Score=%.5f' % (opt_threshold, scores[ix]))
-                            else:
-
-                                # Store prediction of missed Ys
-
-                                Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 2]] = \
-                                    model.predict_proba(X_test_US)[0][1]
-                                Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 2]] = \
-                                    model.predict(X_test_US)[0]
-
-                        else:
-
-                            # Store prediction of missed Ys
-
-                            Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 2]] = \
-                            model.predict_proba(X_test_US)[0][1]
-                            Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 2]] = model.predict(X_test_US)[
-                                0]
-
-                if id_split < 431:
-                    self.Y_hat["probs"].iloc[id_split] = Y_hat_US_probs[id_split]
-                    self.Y_hat["label"].iloc[id_split] = Y_hat_US_labs[id_split]
-
-
-
-    def GB_model(self):
-        print(str(self.step_ahead) + "step-ahead training and predicting with GradientBoosting model..")
-        range_data_split = range(self.date_split, len(self.X))
-        method_1=False
-        normalize, resample, pca, params_tuning = False, False, False, False
-
-        most_imp=[]
-        for id_split in range_data_split:
-
-            if method_1:
-
-                normalize, resample, pca, params_tuning = True, False, False, False
-
-                print("predicting  Y_%i | X[0:%i,:] with method 1" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-
-                # Declare variables used to store predictions of missed values of Y
-
-                Y_hat_US_labs, Y_hat_US_probs = Y_train_US.copy(), Y_train_US.copy()
-
-
-                # Loop on missed values of Y
-
-                for i in range(self.step_ahead):
-                    # Train set goes to id of our initial train set to our last predicted/known missing Y
-
-                    print("\t prediciting Y_t- %i" % (self.step_ahead - i))
-
-                    Y_train_tilde = Y_hat_US_labs.iloc[0:id_split - self.step_ahead + i + 1]
-                    X_train_US = self.X.iloc[0:id_split - self.step_ahead + i + 1, :]
-                    X_test_US = self.X.iloc[id_split - self.step_ahead + i + 1:, :]
-
-                    # If True resamples train data
-                    # Check function implementation for more details
-
-                    if resample:
-                        resampled = resample_dataframe(pd.concat([X_train_US, Y_train_tilde], axis=1))
-                        Y_train_tilde = resampled.iloc[:, -1]
-
-                        X_train_US = resampled.iloc[:, :-1]
-
-                    # If True normalizes data
-
-                    if normalize:
-
-                        # Here we can also use standardization_norm()
-
-                        X_train_US, X_test_US = standardization_norm(X_train_US, X_test_US)
-
-                        # Drop nan observations generated by normalization
-
-                        if X_train_US.isna().any().any():
-                            aux = pd.concat([X_train_US, Y_train_tilde], axis=1).dropna()
-                            Y_train_tilde = aux.iloc[:, -1]
-                            X_train_US = aux.iloc[:, :-1]
-
-                    # If True performs a PCA on train set
-
-                    if pca:
-                        most_important_features = PCA_(data=X_train_US, important_features=False, n_comp=.99)
-                        most_imp.append(most_important_features)
-                        X_train_US, X_test_US = X_train_US.filter(most_important_features), X_test_US.filter(
-                            most_important_features)
-
-                    # If True selects the best hyperparams of the model
-                    if params_tuning:
-                        params_grid = {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000]}
-                        grid_search_cv = GridSearchCV(LogisticRegression(max_iter=5000, random_state=42),
-                                                      params_grid,
-                                                      scoring="neg_log_loss", cv=5)
-                        model = grid_search_cv.fit(X_train_US, Y_train_tilde)
-                        print(model.best_params_)
-
-                    # Create model for each iteration to predict the next unknown Y
-
-                    else:
-                        model = GradientBoostingClassifier(n_estimators=2000, learning_rate=0.1, random_state=42).fit(X_train_US,
-                                                                                             Y_train_tilde)
-
-                    # Store prediction of missed Ys
-
-                    Y_hat_US_probs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
-                    Y_hat_US_labs[self.Y.index[id_split - self.step_ahead + i + 1]] = model.predict(X_test_US)[0]
-
-
-                    self.Y_hat["probs"].iloc[id_split] = Y_hat_US_probs[id_split]
-                    self.Y_hat["label"].iloc[id_split] = Y_hat_US_labs[id_split]
-            else:
-
-                print("predicting  Y_%i | X[0:%i,:]" % (id_split, id_split - self.step_ahead + 1))
-                Y_train_US = self.Y.iloc[0:id_split - self.step_ahead + 1]
-                X_train_US = self.X.iloc[0:id_split - self.step_ahead + 1, :]
-
-                X_test_US = self.X.iloc[id_split:, :]
-
-                if resample:
-                    resampled = resample_dataframe(pd.concat([X_train_US, Y_train_US], axis=1))
-                    Y_train_US = resampled.iloc[:, -1]
-
-                    X_train_US = resampled.iloc[:, :-1]
-
-                # If True normalizes data
-                if normalize:
-
-                    # Here we can also use standardization_norm()
-
-                    X_train_US, X_test_US = standardization_norm(X_train_US, X_test_US)
-
-                    # Drop nan observations generated by normalization
-
-                    if X_train_US.isna().any().any():
-                        aux = pd.concat([X_train_US, Y_train_US], axis=1).dropna()
-                        Y_train_US = aux.iloc[:, -1]
-                        X_train_US = aux.iloc[:, :-1]
-
-                model = GradientBoostingClassifier(n_estimators=2000, learning_rate=0.1, random_state=42).fit(X_train_US,
-                                                                                                             Y_train_US)
-
-                self.Y_hat["probs"].iloc[id_split] = model.predict(X_test_US)[0]
-                self.Y_hat["label"].iloc[id_split] = model.predict(X_test_US)[0]
-        return model, self.Y_hat
-
+            return models, self.Y_hat, self.acc_f_time, feature_importance

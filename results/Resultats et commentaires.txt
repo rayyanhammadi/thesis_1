@@ -1,0 +1,53 @@
+On accumule de la complexité au fur et à mesure des résultats
+légende: -: legere degradation --: degradation 
+	+: legere amélioration  ++: amélioration
+	~ : stable
+
+H0 : il n'y pas de diff entre les modeles
+H1 : un modele performe plus qu'un autre
+
+Sans imputation
+
+	Normalisation:
+		+ legere ameliotation de tous les modeles, sauf xgb ~ insensible -> on garde la normalisation
+		rejet de 'lhypothese nulle pour logit, on echoue pour les autres 
+
+	Rechantillonage (over-under):
+		-- logit, - rf , + xgb  -> on garde le réechantillonage pour xgb
+		rejet de 'lhypothese nulle pour logit, on echoue pour les autres 
+
+Avec imputation
+	
+	- logit, ~rf , ++ xgb 
+
+	avec reechantillonage :
+	
+	-logit, ++rf, +xgb 
+
+Le reste:
+	-threshold_tuning dit que par soucis de temps d'execution on l'a pas fait mais meme s'il y'a un changemment ça va pas changer de maniere folle
+	- params tuning pareil, mais dit par contre que ça peut considerablement augmenter la précision pour le rf et le xgb
+	
+
+conclusion : 
+	xgb meilleur avec normalisation et resampling
+	rf meilleur avec imputation normalisation et resampling
+	logit meilleur avec normalisation
+ 
+empiriquement:
+╒═════════════════════════════╤════════════════════════════╤════════════════════════════════╤═══════════════════════╕
+│                             │   Random Forest Classifier │   XGradientBoosting Classifier │   Logistic Regression │
+╞═════════════════════════════╪════════════════════════════╪════════════════════════════════╪═══════════════════════╡
+│ Max Monthly Drawdown in %   │                 -15        │                     -11        │            -15        │
+├─────────────────────────────┼────────────────────────────┼────────────────────────────────┼───────────────────────┤
+│ Highest Monthly Return in % │                  15        │                      13        │             13        │
+├─────────────────────────────┼────────────────────────────┼────────────────────────────────┼───────────────────────┤
+│ Average Returns in %        │                   0.737218 │                       0.634653 │              0.717395 │
+├─────────────────────────────┼────────────────────────────┼────────────────────────────────┼───────────────────────┤
+│ Volatility                  │                   4        │                       4        │              4        │
+├─────────────────────────────┼────────────────────────────┼────────────────────────────────┼───────────────────────┤
+│ Net Return in %             │                 166        │                     143        │            161        │
+├─────────────────────────────┼────────────────────────────┼────────────────────────────────┼───────────────────────┤
+│ Sharpe ratio                │                   0.493729 │                       0.404608 │              0.469407 │
+╘═════════════════════════════╧════════════════════════════╧════════════════════════════════╧═══════════════════════╛
+	
